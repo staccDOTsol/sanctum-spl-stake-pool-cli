@@ -9,7 +9,7 @@ import { put, list } from "@vercel/blob";
 import type { ContentEntry } from "./types";
 
 const REGISTRY_PATH = "registry/index.json";
-const B2_TOKEN      = process.env.B2_READ_WRITE_TOKEN;
+const B2_TOKEN      = process.env.B2_READ_WRITE_TOKEN ?? process.env.BLOB_READ_WRITE_TOKEN;
 
 let _cache: ContentEntry[] | null = null;
 let _cacheTime = 0;

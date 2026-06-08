@@ -8,14 +8,17 @@
  * Requires env vars:
  *   STABLE_POOL_CONFIG   — shared config address for stable (LEAK quote) pools
  *   MEME_POOL_CONFIG     — shared config address for meme pools
- *   QUOTA_POOL_CONFIG    — shared config address for quotiest-quote pools
  *
  * VirtualPool account layout (Anchor, Borsh):
  *   offset   0 :  8 bytes  — discriminator
  *   offset   8 :  64 bytes — volatilityTracker
  *   offset  72 :  32 bytes — config  ← memcmp filter here
  *   offset 104 :  32 bytes — creator
- *   offset 136 :  32 bytes — baseMint ← DontLeak / content mint
+ *   offset 136 :  32 bytes — baseMint ← dataSlice here
+ *
+ * NOTE: dontLeakPoolAddress comes from the account pubkey (authoritative).
+ * The token metadata URI does NOT contain it — the pool address is only
+ * known after deployment, after the metadata is already uploaded.
  */
 import { NextResponse }      from "next/server";
 import { Connection, PublicKey, GetProgramAccountsFilter } from "@solana/web3.js";
@@ -29,14 +32,19 @@ export const dynamic   = "force-dynamic";
 const RPC = process.env.SOLANA_RPC_URL
   ?? "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8";
 
-const DBC_PROGRAM = new PublicKey("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN");
-const CONFIG_OFFSET  = 72;
+const DBC_PROGRAM      = new PublicKey("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN");
+const CONFIG_OFFSET    = 72;
 const BASE_MINT_OFFSET = 136;
+
+interface PoolAccount {
+  poolAddress: PublicKey;
+  baseMint:    PublicKey;
+}
 
 async function poolsForConfig(
   conn: Connection,
   configAddress: string,
-): Promise<PublicKey[]> {
+): Promise<PoolAccount[]> {
   const filters: GetProgramAccountsFilter[] = [
     { memcmp: { offset: CONFIG_OFFSET, bytes: configAddress } },
   ];
@@ -44,13 +52,17 @@ async function poolsForConfig(
     filters,
     dataSlice: { offset: BASE_MINT_OFFSET, length: 32 },
   });
-  return accounts.map(a => new PublicKey(a.account.data));
+  return accounts.map(a => ({
+    poolAddress: a.pubkey,
+    baseMint:    new PublicKey(a.account.data),
+  }));
 }
 
-async function entryFromMint(
-  conn: Connection,
-  baseMint: PublicKey,
-  poolType: PoolType,
+async function entryFromPool(
+  conn:        Connection,
+  poolAddress: PublicKey,
+  baseMint:    PublicKey,
+  poolType:    PoolType,
 ): Promise<ContentEntry | null> {
   try {
     const meta = await getTokenMetadata(conn, baseMint, "confirmed", TOKEN_2022_PROGRAM_ID);
@@ -60,33 +72,30 @@ async function entryFromMint(
     if (!res.ok) return null;
     const json = await res.json();
 
-    // Pull structured data out of attributes array
     const attr = (key: string) =>
       json.attributes?.find((a: { trait_type: string; value: unknown }) => a.trait_type === key)?.value;
 
     const protocol = attr("Protocol");
     if (protocol !== "leak.markets") return null;
 
-    const dontLeakPool = attr("DontLeakPool") as string | undefined;
-    const leakPool     = attr("LeakPool")     as string | undefined;
-    const leakMint     = attr("LeakMint")     as string | undefined;
-    const quoteMint    = attr("QuoteMint")    as string | undefined;
-    const contentUrl   = attr("EncryptedContentUrl") as string | undefined;
-    const totalBytes   = Number(attr("TotalBytes") ?? 0);
-    const contentType  = (attr("ContentType") ?? "text") as ContentEntry["contentType"];
-    const creator      = attr("Creator") as string | undefined;
-    const pt           = (attr("PoolType") ?? poolType) as PoolType;
-
-    if (!dontLeakPool) return null;
+    // Pool address is authoritative from getProgramAccounts — not from metadata
+    const leakPool    = attr("LeakPool")             as string | undefined;
+    const leakMint    = attr("LeakMint")             as string | undefined;
+    const quoteMint   = attr("QuoteMint")            as string | undefined;
+    const contentUrl  = attr("EncryptedContentUrl")  as string | undefined;
+    const totalBytes  = Number(attr("TotalBytes") ?? 0);
+    const contentType = (attr("ContentType") ?? "text") as ContentEntry["contentType"];
+    const creator     = attr("Creator")              as string | undefined;
+    const pt          = (attr("PoolType") ?? poolType) as PoolType;
 
     return {
       id:                  baseMint.toBase58(),
       title:               String(json.name ?? "").replace(/^DontLeak:\s*/, ""),
       description:         String(json.description ?? ""),
       contentType,
-      leakPoolAddress:     leakPool     ?? "",
-      dontLeakPoolAddress: dontLeakPool,
-      leakMint:            leakMint     ?? "",
+      leakPoolAddress:     leakPool ?? "",
+      dontLeakPoolAddress: poolAddress.toBase58(),   // from chain, not metadata
+      leakMint:            leakMint ?? "",
       dontLeakMint:        baseMint.toBase58(),
       totalBytes,
       encryptedPayloadUrl: contentUrl,
@@ -112,22 +121,24 @@ export async function GET() {
   ).filter(c => c.address.length > 0);
 
   if (configs.length === 0) {
-    return NextResponse.json({ error: "No config addresses configured" }, { status: 503 });
+    return NextResponse.json({ error: "No config addresses configured (set STABLE_POOL_CONFIG / MEME_POOL_CONFIG)" }, { status: 503 });
   }
 
   const entries: ContentEntry[] = [];
 
   for (const { address, poolType } of configs) {
-    let mints: PublicKey[];
+    let pools: PoolAccount[];
     try {
-      mints = await poolsForConfig(conn, address);
+      pools = await poolsForConfig(conn, address);
     } catch (e) {
       console.error(`getProgramAccounts failed for config ${address}:`, e);
       continue;
     }
 
     const resolved = await Promise.all(
-      mints.map(mint => entryFromMint(conn, mint, poolType))
+      pools.map(({ poolAddress, baseMint }) =>
+        entryFromPool(conn, poolAddress, baseMint, poolType)
+      )
     );
     entries.push(...resolved.filter((e): e is ContentEntry => e !== null));
   }
