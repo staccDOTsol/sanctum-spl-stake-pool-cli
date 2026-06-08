@@ -4,7 +4,7 @@
  * Uses raw fetch (no @solana/web3.js in the edge runtime).
  */
 
-const RPC = process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com";
+const RPC = process.env.SOLANA_RPC_URL ?? "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8";
 
 // Meteora DBC pool account layout — base_vault at offset 136
 const BASE_VAULT_OFFSET = 136;

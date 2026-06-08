@@ -30,7 +30,7 @@ import {
   BaseFeeMode, deriveDbcPoolAddress,
 } from "@meteora-ag/dynamic-bonding-curve-sdk";
 
-const RPC_URL   = process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com";
+const RPC_URL   = process.env.SOLANA_RPC_URL ?? "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8";
 const LEAK_MINT = new PublicKey("GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS");
 
 function buildPool2ConfigParam() {

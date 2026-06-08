@@ -6,7 +6,7 @@ import { put } from "@vercel/blob/client";
 import { connectWallet, type WalletProvider } from "@/lib/deploy/wallet";
 import { deployPool2 } from "@/lib/deploy/transactions";
 
-const RPC = process.env.NEXT_PUBLIC_SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com";
+const RPC = process.env.NEXT_PUBLIC_SOLANA_RPC_URL ?? "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8";
 
 type Step = "wallet" | "details" | "deploy" | "encrypt" | "register" | "done";
 
