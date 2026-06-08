@@ -141,11 +141,14 @@ export default async function ContentDetailPage({ params }: { params: Promise<{ 
         </div>
       </div>
 
-      {/* In-app swap widget */}
+      {/* In-app swap widget — SOL→LEAK→quoteMint→DontLeak */}
       <div className="mb-8">
         <SwapWidget
           dontLeakPoolAddress={entry.dontLeakPoolAddress}
           dontLeakMint={entry.dontLeakMint}
+          quoteMint={entry.quoteMint ?? "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS"}
+          l1PoolAddress={entry.leakPoolAddress}
+          quoteDecimals={entry.poolType === "meme" ? 6 : 9}
         />
       </div>
 

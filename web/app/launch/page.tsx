@@ -4,11 +4,12 @@ import { useState, useRef } from "react";
 import { Connection } from "@solana/web3.js";
 import { put } from "@vercel/blob/client";
 import { connectWallet, type WalletProvider } from "@/lib/deploy/wallet";
-import { deployPool2 } from "@/lib/deploy/transactions";
+import { deployPool2, LEAK_MINT, RFREESTACC_MINT, MEME_QUOTE_MINT, STABLE_L1_POOL, MEME_L1_POOL, type PoolTypeChoice } from "@/lib/deploy/transactions";
 
-const RPC = process.env.NEXT_PUBLIC_SOLANA_RPC_URL ?? "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8";
+const RPC = process.env.NEXT_PUBLIC_SOLANA_RPC_URL
+  ?? "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8";
 
-type Step = "wallet" | "details" | "deploy" | "encrypt" | "register" | "done";
+type Step = "wallet" | "pooltype" | "details" | "deploy" | "done";
 
 interface FormState {
   title:       string;
@@ -17,8 +18,6 @@ interface FormState {
   file:        File | null;
 }
 
-// Get a client token server-side, then PUT file directly to Blob from browser.
-// The file never passes through our serverless function → no 4.5 MB limit.
 async function blobUpload(pathname: string, file: File): Promise<string> {
   const res = await fetch("/api/blob/presign", {
     method: "POST",
@@ -34,18 +33,34 @@ async function blobUpload(pathname: string, file: File): Promise<string> {
   return blob.url;
 }
 
-export default function LaunchPage() {
-  const [step, setStep]       = useState<Step>("wallet");
-  const [wallet, setWallet]   = useState<WalletProvider | null>(null);
-  const [form, setForm]       = useState<FormState>({ title: "", description: "", contentType: "text", file: null });
-  const [log, setLog]         = useState<string[]>([]);
-  const [error, setError]     = useState<string | null>(null);
-  const [result, setResult]   = useState<{ pool2Address: string; dontLeakMint: string } | null>(null);
-  const fileRef               = useRef<HTMLInputElement>(null);
+// L1 quote tokens — content pools quote against these (not LEAK directly).
+// Buyers: SOL → LEAK (Jupiter) → quoteMint (DBC L1) → DontLeak (DBC L2)
+const POOL_TYPES: { id: PoolTypeChoice; label: string; sub: string; accent: string }[] = [
+  {
+    id:     "stable",
+    label:  "rfreestacc",
+    sub:    "Quote rfreestacc → bonds to LEAK. Yield-bearing, progressive decryption.",
+    accent: "green",
+  },
+  {
+    id:     "meme",
+    label:  "Meme Launch",
+    sub:    "Quote GNcibpKH → bonds to LEAK. 1B market cap to fully bond.",
+    accent: "purple",
+  },
+];
 
-  function addLog(msg: string) {
-    setLog(prev => [...prev, msg]);
-  }
+export default function LaunchPage() {
+  const [step, setStep]           = useState<Step>("wallet");
+  const [wallet, setWallet]       = useState<WalletProvider | null>(null);
+  const [poolType, setPoolType]   = useState<PoolTypeChoice>("stable");
+  const [form, setForm]           = useState<FormState>({ title: "", description: "", contentType: "text", file: null });
+  const [log, setLog]             = useState<string[]>([]);
+  const [error, setError]         = useState<string | null>(null);
+  const [result, setResult]       = useState<{ pool2Address: string; dontLeakMint: string } | null>(null);
+  const fileRef                   = useRef<HTMLInputElement>(null);
+
+  function addLog(msg: string) { setLog(prev => [...prev, msg]); }
 
   async function handleConnect() {
     setError(null);
@@ -53,7 +68,7 @@ export default function LaunchPage() {
       const w = await connectWallet();
       setWallet(w);
       addLog(`Wallet connected: ${w.publicKey.toBase58().slice(0, 12)}…`);
-      setStep("details");
+      setStep("pooltype");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Wallet connection failed");
     }
@@ -68,7 +83,6 @@ export default function LaunchPage() {
     try {
       const conn = new Connection(RPC, "confirmed");
 
-      // Content file — presign → browser PUT directly to Blob (no serverless body limit)
       let fileUrl = `https://leak.markets/content/placeholder`;
       if (form.file) {
         addLog(`Uploading ${form.file.name} (${(form.file.size / 1024).toFixed(1)} KB)…`);
@@ -77,26 +91,42 @@ export default function LaunchPage() {
         addLog(`Uploaded: ${fileUrl.slice(0, 60)}…`);
       }
 
-      // Metadata JSON — built in browser, uploaded the same way
-      const slug   = form.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24);
-      const symbol = ("DL" + slug.replace(/-/g, "").toUpperCase()).slice(0, 8);
+      const slug       = form.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24);
+      const symbol     = ("DL" + slug.replace(/-/g, "").toUpperCase()).slice(0, 8);
+      const quoteMint  = poolType === "meme" ? MEME_QUOTE_MINT.toBase58() : RFREESTACC_MINT.toBase58();
+      const l1Pool     = poolType === "meme" ? MEME_L1_POOL : STABLE_L1_POOL;
+      const totalBytes = form.file?.size ?? 0;
+
+      // Metadata attributes cover everything needed for on-chain registry reconstruction.
+      // Buyers: SOL→LEAK(Jupiter) → LEAK→quoteMint(DBC L1 pool) → quoteMint→DontLeak(DBC L2 pool)
       const metaJson = JSON.stringify({
-        name:        `DontLeak: ${form.title}`,
+        name:         `DontLeak: ${form.title}`,
         symbol,
-        description: form.description,
-        image:       fileUrl,
+        description:  form.description,
+        image:        fileUrl,
         external_url: "https://leak.markets",
-        attributes: [{ trait_type: "Protocol", value: "leak.markets" }],
+        attributes: [
+          { trait_type: "Protocol",            value: "leak.markets" },
+          { trait_type: "PoolType",            value: poolType },
+          { trait_type: "ContentType",         value: form.contentType },
+          { trait_type: "TotalBytes",          value: totalBytes },
+          { trait_type: "LeakPool",            value: l1Pool },   // L1 rfreestacc/LEAK or GNcibpKH/LEAK
+          { trait_type: "LeakMint",            value: LEAK_MINT.toBase58() },
+          { trait_type: "QuoteMint",           value: quoteMint },
+          { trait_type: "EncryptedContentUrl", value: fileUrl },
+          { trait_type: "Creator",             value: wallet.publicKey.toBase58() },
+        ],
       });
       const metaFile = new File([metaJson], "metadata.json", { type: "application/json" });
-      const metaUrl = await blobUpload(`token-metadata/${slug}-${Date.now()}.json`, metaFile);
+      const metaUrl  = await blobUpload(`token-metadata/${slug}-${Date.now()}.json`, metaFile);
       addLog(`Metadata JSON: ${metaUrl.slice(0, 60)}…`);
 
-      addLog("Deploying Pool 2 config (tx 1/2)…");
+      addLog(`Deploying ${poolType === "meme" ? "Meme" : "rfreestacc"} Pool 2 (tx 1/1)…`);
       const deployResult = await deployPool2(conn, wallet, {
-        name:   `DontLeak: ${form.title}`,
+        name:     `DontLeak: ${form.title}`,
         symbol,
-        uri:    metaUrl,
+        uri:      metaUrl,
+        poolType,
       });
 
       setResult({ pool2Address: deployResult.pool2Address, dontLeakMint: deployResult.dontLeakMint });
@@ -104,22 +134,23 @@ export default function LaunchPage() {
       addLog(`  DontLeak mint:   ${deployResult.dontLeakMint}`);
       addLog(`  Pool address:    ${deployResult.pool2Address}`);
 
-      setStep("encrypt");
-      await handleEncryptAndRegister(deployResult, fileUrl, metaUrl);
+      await handleRegister(deployResult, fileUrl, metaUrl, totalBytes);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Deployment failed");
       setStep("details");
     }
   }
 
-  async function handleEncryptAndRegister(
-    deployResult: { pool2Address: string; dontLeakMint: string; sig: string },
+  async function handleRegister(
+    deployResult: { pool2Address: string; dontLeakMint: string; quoteMint: string; sig: string },
     fileUrl: string,
     metaUrl: string,
+    totalBytes: number,
   ) {
     addLog("Registering content…");
     try {
-      const totalBytes = form.file?.size ?? 0;
+      const l1PoolAddr = poolType === "meme" ? MEME_L1_POOL              : STABLE_L1_POOL;
+      const qMint      = poolType === "meme" ? MEME_QUOTE_MINT.toBase58() : RFREESTACC_MINT.toBase58();
       const regRes = await fetch("/api/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -127,20 +158,19 @@ export default function LaunchPage() {
           title:               form.title,
           description:         form.description,
           contentType:         form.contentType,
-          leakPoolAddress:     "ze1HvkHogbWPRiR6W5DYp82YrtJTAum1WEDLrUJNjwX",
+          leakPoolAddress:     l1PoolAddr,  // L1 pool (rfreestacc/LEAK or GNcibpKH/LEAK)
           dontLeakPoolAddress: deployResult.pool2Address,
-          leakMint:            "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS",
+          leakMint:            LEAK_MINT.toBase58(),
           dontLeakMint:        deployResult.dontLeakMint,
+          quoteMint:           qMint,
+          poolType,
           totalBytes,
           encryptedPayloadUrl: fileUrl,
           metadataUrl:         metaUrl,
           creator:             wallet!.publicKey.toBase58(),
         }),
       });
-      if (!regRes.ok) {
-        const { error: regErr } = await regRes.json().catch(() => ({ error: "Registration failed" }));
-        throw new Error(regErr);
-      }
+      if (!regRes.ok) throw new Error((await regRes.json().catch(() => ({ error: "Registration failed" }))).error);
       addLog("✓ Content registered and live!");
       setStep("done");
     } catch (e: unknown) {
@@ -148,6 +178,9 @@ export default function LaunchPage() {
       setStep("done");
     }
   }
+
+  const chosenType = POOL_TYPES.find(t => t.id === poolType)!;
+  const stepIndex  = ["wallet", "pooltype", "details", "deploy", "done"].indexOf(step);
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-16">
@@ -159,50 +192,77 @@ export default function LaunchPage() {
           </span>
         </div>
         <h1 className="text-4xl font-black text-white mb-2">Deploy a Leak</h1>
-        <p className="text-white/50">
-          Encrypt content and let the market decide how much gets revealed.
-        </p>
+        <p className="text-white/50">Encrypt content and let the market decide how much gets revealed.</p>
       </div>
 
+      {/* Progress bar */}
       <div className="flex gap-1 mb-8">
-        {(["wallet", "details", "deploy", "done"] as Step[]).map((s, i) => (
-          <div
-            key={s}
-            className={`h-1 flex-1 rounded-full transition-colors ${
-              ["wallet", "details", "deploy", "encrypt", "register", "done"].indexOf(step) >= i
-                ? "bg-green-500"
-                : "bg-white/10"
-            }`}
-          />
+        {["wallet", "pooltype", "details", "deploy", "done"].map((s, i) => (
+          <div key={s} className={`h-1 flex-1 rounded-full transition-colors ${stepIndex >= i ? "bg-green-500" : "bg-white/10"}`} />
         ))}
       </div>
 
       {error && (
-        <div className="mb-6 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-          {error}
-        </div>
+        <div className="mb-6 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">{error}</div>
       )}
 
+      {/* Step: wallet */}
       {step === "wallet" && (
         <div className="space-y-4">
-          <p className="text-white/70 text-sm">
-            Connect your Solana wallet (Phantom or Solflare) to get started.
-            You{"'"}ll pay gas for two transactions.
-          </p>
-          <button
-            onClick={handleConnect}
-            className="w-full py-3 rounded-xl bg-green-500 hover:bg-green-400 text-black font-bold text-sm transition-colors"
-          >
+          <p className="text-white/70 text-sm">Connect your Solana wallet (Phantom or Solflare) to get started.</p>
+          <button onClick={handleConnect} className="w-full py-3 rounded-xl bg-green-500 hover:bg-green-400 text-black font-bold text-sm transition-colors">
             Connect Wallet
           </button>
         </div>
       )}
 
+      {/* Step: pool type */}
+      {step === "pooltype" && (
+        <div className="space-y-4">
+          <p className="text-white/60 text-sm mb-2">Choose how your content bonds to the market.</p>
+          <div className="grid grid-cols-1 gap-3">
+            {POOL_TYPES.map(pt => (
+              <button
+                key={pt.id}
+                onClick={() => setPoolType(pt.id)}
+                className={`text-left p-4 rounded-xl border-2 transition-colors ${
+                  poolType === pt.id
+                    ? pt.accent === "purple"
+                      ? "border-purple-500/60 bg-purple-500/10"
+                      : "border-green-500/60 bg-green-500/10"
+                    : "border-white/10 hover:border-white/20"
+                }`}
+              >
+                <div className={`font-bold text-sm mb-0.5 ${
+                  poolType === pt.id
+                    ? pt.accent === "purple" ? "text-purple-300" : "text-green-400"
+                    : "text-white/70"
+                }`}>
+                  {pt.label}
+                </div>
+                <div className="text-xs text-white/40">{pt.sub}</div>
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => setStep("details")}
+            className="w-full py-3 rounded-xl bg-green-500 hover:bg-green-400 text-black font-bold text-sm transition-colors"
+          >
+            Continue →
+          </button>
+        </div>
+      )}
+
+      {/* Step: details */}
       {step === "details" && (
-        <form
-          onSubmit={e => { e.preventDefault(); handleDeploy(); }}
-          className="space-y-5"
-        >
+        <form onSubmit={e => { e.preventDefault(); handleDeploy(); }} className="space-y-5">
+          <div className={`p-3 rounded-xl border text-xs font-mono flex items-center justify-between ${
+            chosenType.accent === "purple" ? "bg-purple-500/8 border-purple-500/20 text-purple-400/80" : "bg-green-500/8 border-green-500/20 text-green-400/80"
+          }`}>
+            <span>{chosenType.label}</span>
+            <button type="button" onClick={() => setStep("pooltype")} className="text-white/30 hover:text-white/60 text-[10px]">change</button>
+          </div>
+
           <div className="p-3 rounded-xl bg-white/5 border border-white/8 text-xs text-white/50 font-mono">
             {wallet?.publicKey.toBase58()}
           </div>
@@ -248,35 +308,25 @@ export default function LaunchPage() {
             <label className="block text-sm font-medium text-white/70 mb-1.5">
               File <span className="text-white/30">(optional — will be encrypted)</span>
             </label>
-            <input
-              ref={fileRef}
-              type="file"
-              onChange={e => setForm(f => ({ ...f, file: e.target.files?.[0] ?? null }))}
-              className="hidden"
-            />
+            <input ref={fileRef} type="file" onChange={e => setForm(f => ({ ...f, file: e.target.files?.[0] ?? null }))} className="hidden" />
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
               className="w-full py-6 rounded-xl border-2 border-dashed border-white/10 hover:border-green-500/30 text-white/40 hover:text-white/60 text-sm transition-colors"
             >
-              {form.file ? `📄 ${form.file.name} (${(form.file.size / 1024).toFixed(1)} KB)` : "Click to choose file"}
+              {form.file ? `${form.file.name} (${(form.file.size / 1024).toFixed(1)} KB)` : "Click to choose file"}
             </button>
           </div>
 
-          <button
-            type="submit"
-            className="w-full py-3 rounded-xl bg-green-500 hover:bg-green-400 text-black font-bold text-sm transition-colors"
-          >
-            Deploy Pool 2 + Encrypt →
+          <button type="submit" className="w-full py-3 rounded-xl bg-green-500 hover:bg-green-400 text-black font-bold text-sm transition-colors">
+            Deploy {chosenType.label} Pool →
           </button>
         </form>
       )}
 
-      {(step === "deploy" || step === "encrypt" || step === "register") && (
+      {step === "deploy" && (
         <div className="space-y-3">
-          <p className="text-white/50 text-sm">
-            Follow wallet prompts to sign transactions…
-          </p>
+          <p className="text-white/50 text-sm">Follow wallet prompts to sign transactions…</p>
           <div className="p-4 rounded-xl bg-white/3 border border-white/8 space-y-1.5 font-mono text-xs text-green-400/80 min-h-32 max-h-64 overflow-y-auto">
             {log.map((l, i) => <div key={i}>{l}</div>)}
             <div className="inline-block w-1.5 h-3 bg-green-400/60 animate-pulse ml-0.5" />
@@ -287,34 +337,29 @@ export default function LaunchPage() {
       {step === "done" && result && (
         <div className="space-y-6">
           <div className="p-5 rounded-xl bg-green-500/8 border border-green-500/20">
-            <div className="text-green-400 font-bold text-lg mb-1">🎉 Content deployed!</div>
-            <p className="text-white/60 text-sm">
-              Your DontLeak pool is live. The market can now vote on whether your content
-              gets revealed.
-            </p>
+            <div className="text-green-400 font-bold text-lg mb-1">Content deployed!</div>
+            <p className="text-white/60 text-sm">Your pool is live. The market can now vote on whether your content gets revealed.</p>
           </div>
-
           <div className="space-y-2 font-mono text-xs">
+            <div className="flex justify-between px-3 py-2 rounded-lg bg-white/5">
+              <span className="text-white/40">Pool type</span>
+              <span className="text-white/80">{chosenType.label}</span>
+            </div>
             <div className="flex justify-between px-3 py-2 rounded-lg bg-white/5">
               <span className="text-white/40">DontLeak mint</span>
               <span className="text-white/80">{result.dontLeakMint.slice(0, 20)}…</span>
             </div>
             <div className="flex justify-between px-3 py-2 rounded-lg bg-white/5">
-              <span className="text-white/40">Pool 2 address</span>
+              <span className="text-white/40">Pool address</span>
               <span className="text-white/80">{result.pool2Address.slice(0, 20)}…</span>
             </div>
           </div>
-
           {log.length > 0 && (
             <div className="p-4 rounded-xl bg-white/3 border border-white/8 space-y-1 font-mono text-xs text-green-400/60 max-h-48 overflow-y-auto">
               {log.map((l, i) => <div key={i}>{l}</div>)}
             </div>
           )}
-
-          <a
-            href="/explore"
-            className="block text-center py-3 rounded-xl bg-green-500 hover:bg-green-400 text-black font-bold text-sm transition-colors"
-          >
+          <a href="/explore" className="block text-center py-3 rounded-xl bg-green-500 hover:bg-green-400 text-black font-bold text-sm transition-colors">
             View on Explore →
           </a>
         </div>

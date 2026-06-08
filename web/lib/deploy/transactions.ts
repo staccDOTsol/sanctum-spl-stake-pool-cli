@@ -1,36 +1,38 @@
 /**
  * Browser-side deploy helpers for the leak.markets launch wizard.
- *
- * Pool 2 (DontLeak/Leak) transactions are built server-side using the DBC SDK
- * (correct Anchor discriminators) and returned for wallet signing.
- *
- * Pool 1 (Leak/rfstacc) is already deployed by platform bootstrap.
  */
 import { Connection, Keypair, Transaction, PublicKey } from "@solana/web3.js";
 import type { WalletProvider } from "./wallet";
 
-export const LEAK_MINT     = new PublicKey("GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS");
-export const POOL1_ADDRESS = new PublicKey("ze1HvkHogbWPRiR6W5DYp82YrtJTAum1WEDLrUJNjwX");
-export const POOL1_CONFIG  = new PublicKey("8f6NNHdZeBjDdbECzMAb7Xd3Gttfyd2k7SGR5Qzbus6r");
+// LEAK = base money layer
+export const LEAK_MINT = new PublicKey("GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS");
+
+// L1 quote tokens — content pools quote against these (not LEAK directly)
+// stable: rfreestacc/LEAK pool.  Set NEXT_PUBLIC_RFREESTACC_MINT once deployed.
+// meme:   GNcibpKH/LEAK pool.   Config created by platform; platform earns partner share.
+export const RFREESTACC_MINT = new PublicKey(
+  process.env.NEXT_PUBLIC_RFREESTACC_MINT ?? "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS" // fallback = LEAK
+);
+export const MEME_QUOTE_MINT = new PublicKey("GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump");
+
+// L1 DBC pool addresses (rfreestacc/LEAK and GNcibpKH/LEAK).
+// Set NEXT_PUBLIC_STABLE_L1_POOL and NEXT_PUBLIC_MEME_L1_POOL env vars once deployed.
+export const STABLE_L1_POOL = process.env.NEXT_PUBLIC_STABLE_L1_POOL ?? "";
+export const MEME_L1_POOL   = process.env.NEXT_PUBLIC_MEME_L1_POOL   ?? "";
+
+export type PoolTypeChoice = "stable" | "meme";
 
 export interface DeployPool2Result {
   dontLeakMint: string;
   pool2Address: string;
+  quoteMint:    string;
   sig:          string;
 }
 
-/**
- * Deploy a user's Pool 2 (DontLeak/Leak) on mainnet.
- *
- * 1. Generates ephemeral keypairs for config account + DontLeak mint (in browser)
- * 2. Fetches one combined unsigned transaction from the server
- * 3. Partial-signs with both ephemeral keypairs
- * 4. Wallet signs and sends
- */
 export async function deployPool2(
   conn: Connection,
   wallet: WalletProvider,
-  opts: { name: string; symbol: string; uri: string },
+  opts: { name: string; symbol: string; uri: string; poolType: PoolTypeChoice },
 ): Promise<DeployPool2Result> {
   const configKp   = Keypair.generate();
   const dontLeakKp = Keypair.generate();
@@ -45,6 +47,7 @@ export async function deployPool2(
       name:           opts.name,
       symbol:         opts.symbol,
       uri:            opts.uri,
+      poolType:       opts.poolType,
     }),
   });
 
@@ -53,15 +56,12 @@ export async function deployPool2(
     throw new Error(error ?? "Failed to build transaction");
   }
 
-  const { txBase64, pool2Address, blockhash, lastValidBlockHeight } = await res.json();
+  const { txBase64, pool2Address, quoteMint: returnedQuoteMint, blockhash, lastValidBlockHeight } = await res.json();
 
   const tx = Transaction.from(Buffer.from(txBase64, "base64"));
-
-  // Partial-sign with both ephemeral keypairs (config account + DontLeak mint)
   tx.partialSign(configKp);
   tx.partialSign(dontLeakKp);
 
-  // Wallet provides final signature + broadcasts
   const signed = await wallet.signTransaction(tx);
   const sig    = await conn.sendRawTransaction(signed.serialize(), { skipPreflight: false });
   await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
@@ -69,6 +69,7 @@ export async function deployPool2(
   return {
     dontLeakMint: dontLeakKp.publicKey.toBase58(),
     pool2Address,
+    quoteMint:    (returnedQuoteMint as string) ?? RFREESTACC_MINT.toBase58(),
     sig,
   };
 }
