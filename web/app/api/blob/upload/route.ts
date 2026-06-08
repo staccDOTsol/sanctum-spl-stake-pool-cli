@@ -19,14 +19,14 @@ import { put } from "@vercel/blob";
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
-const ALLOWED_TYPES = new Set(["token-image", "token-metadata", "payload-metadata"]);
-
-const MAX_SIZE_BYTES: Record<string, number> = {
-  "token-image":    512_000,    // 500 KB
-  "token-metadata": 64_000,     // 64 KB
-  "payload-metadata": 256_000,  // 256 KB
+// Raise Next.js body size limit to 50 MB for this route
+export const config = {
+  api: { bodyParser: { sizeLimit: "50mb" } },
 };
+
+const ALLOWED_TYPES = new Set(["token-image", "token-metadata", "payload-metadata", "content"]);
 
 export async function POST(req: NextRequest) {
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
@@ -46,14 +46,6 @@ export async function POST(req: NextRequest) {
   }
   if (!ALLOWED_TYPES.has(type)) {
     return NextResponse.json({ error: `Invalid type: ${type}` }, { status: 400 });
-  }
-
-  const maxSize = MAX_SIZE_BYTES[type];
-  if (file.size > maxSize) {
-    return NextResponse.json(
-      { error: `File too large: ${file.size} bytes (max ${maxSize})` },
-      { status: 413 }
-    );
   }
 
   // Prefix by type so blobs are browsable in the Vercel dashboard

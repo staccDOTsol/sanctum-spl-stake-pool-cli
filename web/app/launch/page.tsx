@@ -66,6 +66,8 @@ export default function LaunchPage() {
         addLog(`Uploading ${form.file.name} (${(form.file.size / 1024).toFixed(1)} KB)…`);
         const fd = new FormData();
         fd.append("file", form.file);
+        fd.append("type", "content");
+        fd.append("filename", form.file.name);
         const blobRes = await fetch("/api/blob/upload", { method: "POST", body: fd });
         if (!blobRes.ok) throw new Error("File upload failed");
         const { url } = await blobRes.json();
