@@ -34,6 +34,7 @@ async function saveToBlob(entries: ContentEntry[]): Promise<void> {
     access:           "public",
     token:            B2_TOKEN,
     addRandomSuffix:  false,
+    allowOverwrite:   true,
     contentType:      "application/json",
   });
 }
