@@ -216,16 +216,24 @@ export default function SwapWidget({
       addLog(`✓ LEAK in wallet  (${sig1.slice(0, 16)}…)`);
 
       // ── Step 2: DBC LEAK → quoteMint (L1 pool) ──────────────────────────
-      if (!l1PoolAddress) throw new Error("L1 pool not configured — set NEXT_PUBLIC_STABLE_L1_POOL / MEME_L1_POOL");
-      addLog("Sign tx 2 — LEAK → quoteMint (DBC L1)");
-      const sig2     = await dbcSwap(conn, wallet, l1PoolAddress, leakOut, false, quoteIsT22);
-      const quoteOut = leakOut;
-      addLog(`✓ quoteMint received  (${sig2.slice(0, 16)}…)`);
+      // Skip if quoteMint IS LEAK (stable pools with no separate L1 pool yet)
+      const needsL1Swap = !!l1PoolAddress && quoteMint !== LEAK_MINT;
+      let quoteOut = leakOut;
+      let lastSig  = sig1;
 
-      if (mode === "leak") { setDone(sig2); return; }
+      if (needsL1Swap) {
+        addLog("Sign tx 2 — LEAK → quoteMint (DBC L1)");
+        lastSig  = await dbcSwap(conn, wallet, l1PoolAddress, leakOut, false, quoteIsT22);
+        quoteOut = leakOut; // approximate; actual settled on-chain
+        addLog(`✓ quoteMint received  (${lastSig.slice(0, 16)}…)`);
+      } else {
+        addLog("quoteMint = LEAK — skipping L1 pool swap");
+      }
+
+      if (mode === "leak") { setDone(lastSig); return; }
 
       // ── Step 3: DBC quoteMint → DontLeak (L2 content pool) ───────────────
-      addLog("Sign tx 3 — quoteMint → DontLeak (DBC L2)");
+      addLog(`Sign tx ${needsL1Swap ? 3 : 2} — quoteMint → DontLeak (DBC L2)`);
       const sig3 = await dbcSwap(conn, wallet, dontLeakPoolAddress, quoteOut, false, quoteIsT22);
       addLog(`✓ DontLeak received  (${sig3.slice(0, 16)}…)`);
       setDone(sig3);
