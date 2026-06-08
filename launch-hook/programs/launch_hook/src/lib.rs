@@ -21,7 +21,7 @@ use spl_tlv_account_resolution::{
 };
 use spl_transfer_hook_interface::instruction::{ExecuteInstruction, TransferHookInstruction};
 
-declare_id!("Hook1111111111111111111111111111111111111111"); // replaced by `anchor build`/Playground
+declare_id!("3DHcCStU9T78en4cGXVmRanGRHFR8h7JgoQb8FWoR4kZ");
 
 // ---- fixed program-level constants -------------------------------------------
 pub const WHIRLPOOL_PROGRAM: Pubkey = pubkey!("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc");

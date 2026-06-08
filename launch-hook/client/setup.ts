@@ -42,7 +42,7 @@ const RPC = process.env.RPC ??
 const DRY_RUN = process.env.DRY_RUN !== "0";
 
 // your launch_hook program id (after `anchor build`/Playground deploy)
-const PROGRAM_ID = new PublicKey(process.env.PROGRAM_ID ?? "Hook1111111111111111111111111111111111111111");
+const PROGRAM_ID = new PublicKey(process.env.PROGRAM_ID ?? "3DHcCStU9T78en4cGXVmRanGRHFR8h7JgoQb8FWoR4kZ");
 
 // the 0/0 config + fee tier discovered on mainnet
 const WHIRLPOOLS_CONFIG = new PublicKey("Bwai3jTUTvMfXYbGfMpX4CSi3q7wLXSBHeJeUpzNh9FZ");

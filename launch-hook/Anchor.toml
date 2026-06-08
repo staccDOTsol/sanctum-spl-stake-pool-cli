@@ -6,7 +6,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-launch_hook = "Hook1111111111111111111111111111111111111111"
+launch_hook = "3DHcCStU9T78en4cGXVmRanGRHFR8h7JgoQb8FWoR4kZ"
 
 [registry]
 url = "https://api.apr.dev"
