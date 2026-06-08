@@ -1,0 +1,40 @@
+{
+  "name": "@leak-markets/protocol",
+  "version": "1.0.0",
+  "description": "leak.markets — Lit Protocol v8 + Meteora DBC two-pool progressive content decryption",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "lit-decrypt": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli/index.ts",
+    "start": "node dist/cli/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lit-protocol/lit-node-client": "^6.11.0",
+    "@lit-protocol/auth-helpers": "^6.11.0",
+    "@lit-protocol/types": "^6.11.0",
+    "@lit-protocol/constants": "^6.11.0",
+    "@lit-protocol/wrapped-keys": "^6.11.0",
+    "@solana/web3.js": "^1.91.0",
+    "@solana/spl-token": "^0.4.0",
+    "viem": "^2.0.0",
+    "commander": "^12.0.0",
+    "dotenv": "^16.0.0",
+    "bs58": "^5.0.0",
+    "tweetnacl": "^1.0.3",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "tsx": "^4.9.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
