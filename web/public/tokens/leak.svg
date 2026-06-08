@@ -1,0 +1,30 @@
+<svg width="200" height="200" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#0d2a1a"/>
+      <stop offset="100%" stop-color="#050e09"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#22c55e" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#22c55e" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="dropGrad" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#4ade80"/>
+      <stop offset="100%" stop-color="#16a34a"/>
+    </linearGradient>
+  </defs>
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="100" fill="url(#bg)"/>
+  <circle cx="100" cy="100" r="100" fill="url(#glow)"/>
+  <!-- Ring -->
+  <circle cx="100" cy="100" r="90" stroke="#22c55e" stroke-width="1.5" stroke-opacity="0.3" fill="none"/>
+  <!-- Water drop -->
+  <path d="M100 42 C100 42 65 88 65 112 C65 131.5 81.5 147 100 147 C118.5 147 135 131.5 135 112 C135 88 100 42 100 42Z" fill="url(#dropGrad)" opacity="0.95"/>
+  <!-- Inner highlight -->
+  <ellipse cx="91" cy="98" rx="8" ry="14" fill="white" fill-opacity="0.18" transform="rotate(-15 91 98)"/>
+  <!-- Lock symbol — cracked open -->
+  <rect x="84" y="110" width="32" height="22" rx="4" fill="#0d2a1a" stroke="#4ade80" stroke-width="1.5"/>
+  <path d="M87 110 L87 102 C87 93.2 113 93.2 113 102 L113 110" stroke="#4ade80" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <!-- Crack in lock -->
+  <path d="M100 115 L97 121 L103 121 L100 127" stroke="#4ade80" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

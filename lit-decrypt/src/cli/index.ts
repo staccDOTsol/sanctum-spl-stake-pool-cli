@@ -17,6 +17,7 @@ import { registerCreatePoolsCommand } from "./commands/create-pools.js";
 import { registerEncryptCommand } from "./commands/encrypt-content.js";
 import { registerDecryptCommand } from "./commands/decrypt-content.js";
 import { registerCheckRatioCommand } from "./commands/check-ratio.js";
+import { registerCreateDevConfigCommand } from "./commands/create-dev-config.js";
 
 const program = new Command();
 
@@ -37,5 +38,6 @@ registerCreatePoolsCommand(program);
 registerEncryptCommand(program);
 registerDecryptCommand(program);
 registerCheckRatioCommand(program);
+registerCreateDevConfigCommand(program);
 
 program.parse(process.argv);

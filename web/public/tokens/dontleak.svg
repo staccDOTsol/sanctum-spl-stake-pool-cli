@@ -1,0 +1,31 @@
+<svg width="200" height="200" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg2" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#2a0d0d"/>
+      <stop offset="100%" stop-color="#0e0505"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#ef4444" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#ef4444" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="dropGrad2" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#f87171"/>
+      <stop offset="100%" stop-color="#b91c1c"/>
+    </linearGradient>
+  </defs>
+  <!-- Background -->
+  <circle cx="100" cy="100" r="100" fill="url(#bg2)"/>
+  <circle cx="100" cy="100" r="100" fill="url(#glow2)"/>
+  <circle cx="100" cy="100" r="90" stroke="#ef4444" stroke-width="1.5" stroke-opacity="0.3" fill="none"/>
+  <!-- Water drop (crossed out) -->
+  <path d="M100 42 C100 42 65 88 65 112 C65 131.5 81.5 147 100 147 C118.5 147 135 131.5 135 112 C135 88 100 42 100 42Z" fill="url(#dropGrad2)" opacity="0.5"/>
+  <!-- Cross / slash over drop -->
+  <line x1="68" y1="68" x2="132" y2="132" stroke="#ef4444" stroke-width="6" stroke-linecap="round"/>
+  <line x1="132" y1="68" x2="68" y2="132" stroke="#ef4444" stroke-width="6" stroke-linecap="round"/>
+  <!-- Lock symbol — fully closed -->
+  <rect x="84" y="112" width="32" height="22" rx="4" fill="#2a0d0d" stroke="#f87171" stroke-width="1.5"/>
+  <path d="M87 112 L87 104 C87 95.2 113 95.2 113 104 L113 112" stroke="#f87171" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <!-- Keyhole -->
+  <circle cx="100" cy="120" r="4" fill="#f87171"/>
+  <rect x="98.5" y="120" width="3" height="7" rx="1" fill="#f87171"/>
+</svg>
