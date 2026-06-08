@@ -262,7 +262,7 @@ export default function SwapWidget({
                 : "text-white/30 hover:text-white/50"
             }`}
           >
-            {m === "leak" ? "📈 Buy Quote" : "🔐 Buy DontLeak"}
+            {m === "leak" ? "📈 Buy Leak" : "🔐 Buy DontLeak"}
           </button>
         ))}
       </div>
@@ -338,7 +338,7 @@ export default function SwapWidget({
             isLeak ? "bg-green-500 hover:bg-green-400 text-black" : "bg-red-500 hover:bg-red-400 text-white"
           }`}
         >
-          {busy ? "Swapping…" : isLeak ? "Buy Quote Token →" : "Buy DontLeak →"}
+          {busy ? "Swapping…" : isLeak ? "Buy Leak →" : "Buy DontLeak →"}
         </button>
       ) : (
         <button onClick={handleConnect}

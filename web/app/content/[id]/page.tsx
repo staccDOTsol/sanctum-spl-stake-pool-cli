@@ -10,6 +10,7 @@ import { fetchPoolRatio } from "@/lib/solana";
 import { getMockSnapshot } from "@/lib/mockRatio";
 import RatioBar from "@/components/RatioBar";
 import SwapWidget from "@/components/SwapWidget";
+import LitDecryptViewer from "@/components/LitDecryptViewer";
 import Link from "next/link";
 
 export const revalidate = 15;
@@ -85,59 +86,19 @@ export default async function ContentDetailPage({ params }: { params: Promise<{ 
         </div>
       </div>
 
-      {/* Partial content preview */}
+      {/* Lit Protocol progressive decryption */}
       <div className="rounded-2xl border border-white/8 bg-[#13131a] overflow-hidden mb-6">
         <div className="px-4 py-3 border-b border-white/6 flex items-center justify-between">
-          <span className="text-xs font-mono text-white/40">Content preview</span>
+          <span className="text-xs font-mono text-white/40">Content · Lit Protocol</span>
           <span className="text-xs font-mono text-green-400/60">{leakPct}% revealed</span>
         </div>
-
-        <div className="relative h-64">
-          {/* Revealed portion */}
-          <div
-            className="absolute inset-x-0 top-0 bg-gradient-to-b from-green-950/40 to-transparent flex items-start justify-center overflow-hidden transition-all duration-700"
-            style={{ height: `${leakPct}%` }}
-          >
-            {entry.encryptedPayloadUrl && r > 0.05 ? (
-              <p className="text-white/50 text-xs font-mono p-4 pt-6">
-                {/* In production this would be the Lit-decrypted prefix bytes */}
-                [{formatBytes(revealedBytes)} of plaintext — connect wallet + buy Leak to decrypt via Lit TEE]
-              </p>
-            ) : (
-              <div className="w-full h-full flex items-center justify-center">
-                <span className="text-white/20 text-xs font-mono">Buy Leak tokens to start revealing →</span>
-              </div>
-            )}
-          </div>
-
-          {/* Encrypted portion */}
-          <div
-            className="absolute inset-x-0 bottom-0 flex items-center justify-center"
-            style={{
-              height: `${100 - leakPct}%`,
-              backgroundImage: `repeating-linear-gradient(
-                0deg,
-                transparent,
-                transparent 3px,
-                rgba(255,255,255,0.015) 3px,
-                rgba(255,255,255,0.015) 6px
-              )`,
-            }}
-          >
-            {100 - leakPct > 15 && (
-              <span className="text-white/15 font-mono text-xs select-none tracking-widest">
-                ██████ ENCRYPTED ██████
-              </span>
-            )}
-          </div>
-
-          {/* Divider line at the leak boundary */}
-          {r > 0.02 && r < 0.98 && (
-            <div
-              className="absolute inset-x-0 h-px bg-green-500/30"
-              style={{ top: `${leakPct}%` }}
-            />
-          )}
+        <div className="p-4">
+          <LitDecryptViewer
+            encryptedPayloadUrl={entry.encryptedPayloadUrl}
+            contentType={entry.contentType}
+            ratio={r}
+            totalBytes={entry.totalBytes}
+          />
         </div>
       </div>
 

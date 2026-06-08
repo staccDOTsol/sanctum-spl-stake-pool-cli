@@ -83,12 +83,17 @@ export default function LaunchPage() {
     try {
       const conn = new Connection(RPC, "confirmed");
 
-      let fileUrl = `https://leak.markets/content/placeholder`;
+      let fileUrl = "";
       if (form.file) {
-        addLog(`Uploading ${form.file.name} (${(form.file.size / 1024).toFixed(1)} KB)…`);
-        const pathname = `content/${Date.now()}-${form.file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-        fileUrl = await blobUpload(pathname, form.file);
-        addLog(`Uploaded: ${fileUrl.slice(0, 60)}…`);
+        addLog(`Encrypting ${form.file.name} with Lit Protocol…`);
+        const { encryptBytes } = await import("@/lib/lit");
+        const rawBytes    = new Uint8Array(await form.file.arrayBuffer());
+        const encrypted   = await encryptBytes(rawBytes, form.file.type || "application/octet-stream", form.file.name);
+        const payloadJson = JSON.stringify(encrypted);
+        const payloadFile = new File([payloadJson], "encrypted-payload.json", { type: "application/json" });
+        const pathname    = `content/${Date.now()}-${form.file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}.enc.json`;
+        fileUrl = await blobUpload(pathname, payloadFile);
+        addLog(`Encrypted & uploaded: ${fileUrl.slice(0, 60)}…`);
       }
 
       const slug       = form.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24);
