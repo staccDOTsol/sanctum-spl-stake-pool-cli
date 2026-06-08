@@ -31,6 +31,8 @@ import {
   WhirlpoolContext, buildWhirlpoolClient, ORCA_WHIRLPOOL_PROGRAM_ID,
   PDAUtil, PoolUtil, PriceMath, TickUtil, increaseLiquidityQuoteByInputTokenWithParams,
 } from "@orca-so/whirlpools-sdk";
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { NO_TOKEN_EXTENSION_CONTEXT } = require("@orca-so/whirlpools-sdk/dist/utils/public/token-extension-util");
 import { Percentage } from "@orca-so/common-sdk";
 import { AnchorProvider, Program, Wallet, BN } from "@coral-xyz/anchor";
 import Decimal from "decimal.js";
@@ -101,26 +103,35 @@ async function ensurePool() {
       const { poolKey, tx } = await client.createPool(
         WHIRLPOOLS_CONFIG, mintA, mintB, TICK_SPACING, initialTick, payer.publicKey);
       await tx.buildAndExecute();
-      pool = await client.getPool(poolKey);
+      // retry fetch a few times to allow the tx to be confirmed/indexed
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await new Promise(r => setTimeout(r, 3000));
+        try { pool = await client.getPool(poolKey); break; } catch { /* retry */ }
+      }
     }
   }
 
   // seed a tight range around current price (only if we have a live pool object)
   if (pool && !DRY_RUN) {
-    const data = pool.getData();
-    const curTick = data.tickCurrentIndex;
-    const lower = TickUtil.getInitializableTickIndex(curTick - TICK_SPACING * 88, TICK_SPACING);
-    const upper = TickUtil.getInitializableTickIndex(curTick + TICK_SPACING * 88, TICK_SPACING);
-    const quote = increaseLiquidityQuoteByInputTokenWithParams({
-      tokenMintA: pool.getTokenAInfo().mint, tokenMintB: pool.getTokenBInfo().mint,
-      sqrtPrice: data.sqrtPrice, tickCurrentIndex: curTick,
-      tickLowerIndex: lower, tickUpperIndex: upper,
-      inputTokenMint: USDC, inputTokenAmount: new BN(1_000_000), // 1 USDC seed
-      slippageTolerance: Percentage.fromFraction(1, 100),
-    });
-    const { tx } = await pool.openPosition(lower, upper, quote);
-    await tx.buildAndExecute();
-    console.log("seeded position");
+    try {
+      const data = pool.getData();
+      const curTick = data.tickCurrentIndex;
+      const lower = TickUtil.getInitializableTickIndex(curTick - TICK_SPACING * 88, TICK_SPACING);
+      const upper = TickUtil.getInitializableTickIndex(curTick + TICK_SPACING * 88, TICK_SPACING);
+      const quote = increaseLiquidityQuoteByInputTokenWithParams({
+        tokenMintA: pool.getTokenAInfo().mint, tokenMintB: pool.getTokenBInfo().mint,
+        sqrtPrice: data.sqrtPrice, tickCurrentIndex: curTick,
+        tickLowerIndex: lower, tickUpperIndex: upper,
+        inputTokenMint: USDC, inputTokenAmount: new BN(1_000_000), // 1 USDC seed
+        slippageTolerance: Percentage.fromFraction(1, 100),
+        tokenExtensionCtx: NO_TOKEN_EXTENSION_CONTEXT,
+      });
+      const { tx } = await pool.openPosition(lower, upper, quote);
+      await tx.buildAndExecute();
+      console.log("seeded position");
+    } catch (e) {
+      console.warn("seeding skipped (pool may already be seeded):", (e as Error).message?.split("\n")[0]);
+    }
   }
 
   return { poolPda: poolPda.publicKey, mintA, mintB };
@@ -174,8 +185,9 @@ async function deriveMeta(mint: PublicKey, poolPda: PublicKey, mintA: PublicKey,
   const ownerB = aIsWsol ? usdcAta : wsolAta;
 
   // ExtraAccountMetaList order MUST match lib.rs (I_VAULT=0 … I_SYS_PROG=15).
-  // vault is index 0 (a PDA, written by the program itself), so remaining = 1..15:
+  // All 16 must be passed; vault at index 0 is stored as seeds-derived meta.
   const poolAccounts = [
+    VAULT_PDA,  // index 0: vault PDA (stored as seed-derived, but must be present)
     ownerA, ownerB, poolPda, mintA, mintB, tokenVaultA, tokenVaultB,
     ta(0), ta(1), ta(2), oracle,
     ORCA_WHIRLPOOL_PROGRAM_ID, TOKEN_PROGRAM_ID, MEMO_PROGRAM, SystemProgram.programId,
@@ -217,14 +229,13 @@ async function fundAndTrigger(mint: PublicKey, m) {
   const payerAta = getAssociatedTokenAddressSync(mint, payer.publicKey, false, TOKEN_2022_PROGRAM_ID);
   await send([
     createAssociatedTokenAccountIdempotentInstruction(payer.publicKey, payerAta, payer.publicKey, mint, TOKEN_2022_PROGRAM_ID),
-    createMintToInstruction(mint, payerAta, payer.publicKey, 1_000_000_000_000n, [], TOKEN_2022_PROGRAM_ID),
+    createMintToInstruction(mint, payerAta, payer.publicKey, 1_000_000n * 10n**9n, [], TOKEN_2022_PROGRAM_ID), // 1 million tokens, 9 decimals
   ], [], "mint thook supply");
 
-  // a self-transfer of the hooked mint -> fires Execute (resolves the meta list)
-  const dest = getAssociatedTokenAddressSync(mint, payer.publicKey, false, TOKEN_2022_PROGRAM_ID);
-  const triggerIx = await createTransferCheckedWithTransferHookInstruction(
-    conn, payerAta, mint, dest, payer.publicKey, 1n, 9, [], "confirmed", TOKEN_2022_PROGRAM_ID);
-  await send([triggerIx], [], "TRIGGER transfer (fires hook)");
+  // NOTE: trigger transfer skipped — ExtraAccountMetaList must be initialized first.
+  // Once the program is redeployed and ExtraAccountMetaList is initialized, run:
+  //   SKIP_STEPS=pool,mint,meta npx ts-node setup.ts
+  console.log("mint ATA (holds 1M tokens):", payerAta.toBase58());
 }
 
 (async () => {
@@ -232,12 +243,18 @@ async function fundAndTrigger(mint: PublicKey, m) {
   console.log("program:", PROGRAM_ID.toBase58(), "vault:", VAULT_PDA.toBase58());
 
   const idl = JSON.parse(fs.readFileSync(process.env.IDL ?? "./launch_hook.json", "utf8"));
-  const program = new Program(idl, provider);
+  const program = new Program(idl, PROGRAM_ID, provider);
 
   const { poolPda, mintA, mintB } = await ensurePool();
   const mint = await createHookedMint();
   const m = await deriveMeta(mint.publicKey, poolPda, mintA, mintB);
-  await initMetaList(program, mint.publicKey, m);
+  try {
+    await initMetaList(program, mint.publicKey, m);
+  } catch (e) {
+    console.warn("⚠ initMetaList failed (program needs redeployment with account-creation fix):", (e as Error).message?.split("\n")[0]);
+    console.warn("  Mint address:", mint.publicKey.toBase58());
+    console.warn("  After redeploying the fixed program, update the transfer hook and call initializeExtraAccountMetaList again.");
+  }
   await fundAndTrigger(mint.publicKey, m);
 
   console.log("\nNext: create FluxBeam thook/USDC + thook/wSOL pools in the FluxBeam app.");

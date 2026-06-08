@@ -15,6 +15,7 @@ use anchor_lang::solana_program::{
     pubkey,
     pubkey::Pubkey,
     system_instruction,
+    sysvar::rent::Rent,
 };
 use spl_tlv_account_resolution::{
     account::ExtraAccountMeta, seeds::Seed, state::ExtraAccountMetaList,
@@ -102,6 +103,31 @@ pub mod launch_hook {
         for (i, w) in writable.iter().enumerate() {
             metas.push(ExtraAccountMeta::new_with_pubkey(ra[i + 1].key, false, *w)?);
         }
+
+        // Allocate the account before writing — the program must do this via CPI.
+        let space = ExtraAccountMetaList::size_of(metas.len())
+            .map_err(|_| error!(HookError::BadAccounts))?;
+        let lamports = Rent::get()?.minimum_balance(space);
+        let mint_key = ctx.accounts.mint.key();
+        let (_, bump) = Pubkey::find_program_address(
+            &[b"extra-account-metas", mint_key.as_ref()],
+            ctx.program_id,
+        );
+        invoke_signed(
+            &system_instruction::create_account(
+                ctx.accounts.payer.key,
+                ctx.accounts.extra_account_meta_list.key,
+                lamports,
+                space as u64,
+                ctx.program_id,
+            ),
+            &[
+                ctx.accounts.payer.to_account_info(),
+                ctx.accounts.extra_account_meta_list.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+            &[&[b"extra-account-metas", mint_key.as_ref(), &[bump]]],
+        )?;
 
         let acc = ctx.accounts.extra_account_meta_list.to_account_info();
         let mut data = acc.try_borrow_mut_data()?;

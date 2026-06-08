@@ -7,7 +7,7 @@
     "setup": "ts-node setup.ts"
   },
   "dependencies": {
-    "@coral-xyz/anchor": "^0.30.1",
+    "@coral-xyz/anchor": "~0.29.0",
     "@orca-so/whirlpools-sdk": "^0.13.12",
     "@orca-so/common-sdk": "^0.6.4",
     "@solana/spl-token": "^0.4.8",
