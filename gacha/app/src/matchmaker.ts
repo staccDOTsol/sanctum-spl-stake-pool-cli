@@ -20,12 +20,11 @@ import {
   LAMPORTS_PER_SOL,
 } from "@solana/web3.js";
 import {
-  ASSOCIATED_TOKEN_PROGRAM_ID,
-  TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountIdempotentInstruction,
   createCloseAccountInstruction,
   createTransferCheckedInstruction,
   getAccount,
+  getAssociatedTokenAddressSync,
   getMint,
 } from "@solana/spl-token";
 import { computeEntropy } from "./randomness.js";
@@ -192,7 +191,7 @@ export class Matchmaker {
     }
 
     // Classify requester's mint to determine which tier bucket to match within
-    const reqAccPrelim = await getAccount(this.connection, requester.ata);
+    const reqAccPrelim = await getAccount(this.connection, requester.ata, undefined, requester.programId);
     if (reqAccPrelim.amount === 0n) {
       console.warn("[matchmaker] requester ATA is empty, skipping");
       return;
@@ -229,7 +228,7 @@ export class Matchmaker {
     // and the deterministic filter rule is itself auditable from the receipt.
     const pityTriggered = this.history.pityActive(sender.toBase58());
     if (pityTriggered) {
-      const reqMintPrelim = await getMint(this.connection, reqAccPrelim.mint);
+      const reqMintPrelim = await getMint(this.connection, reqAccPrelim.mint, undefined, requester.programId);
       const reqUsdPrelim = await getSwapBasedUsdValue(
         reqAccPrelim.mint.toBase58(), reqAccPrelim.amount, reqMintPrelim.decimals
       );
@@ -237,8 +236,8 @@ export class Matchmaker {
         const upOnly = (await Promise.all(
           candidates.map(async e => {
             try {
-              const acc = await getAccount(this.connection, e.ata);
-              const mint = await getMint(this.connection, acc.mint);
+              const acc = await getAccount(this.connection, e.ata, undefined, e.programId);
+              const mint = await getMint(this.connection, acc.mint, undefined, e.programId);
               const usd = await getSwapBasedUsdValue(acc.mint.toBase58(), acc.amount, mint.decimals);
               return (usd ?? 0) >= reqUsdPrelim ? e : null;
             } catch { return null; }
@@ -264,10 +263,14 @@ export class Matchmaker {
     );
     const counterparty = candidates[Number(entropy.randomIndex)];
 
+    // Per-side token programs (a swap can cross TOKEN ↔ TOKEN_2022).
+    const reqProgram = requester.programId;
+    const ctpProgram = counterparty.programId;
+
     // Fetch current on-chain state (reqAccPrelim already fresh, just reuse)
     const [reqAcc, ctpAcc] = await Promise.all([
       Promise.resolve(reqAccPrelim),
-      getAccount(this.connection, counterparty.ata),
+      getAccount(this.connection, counterparty.ata, undefined, ctpProgram),
     ]);
 
     if (reqAcc.amount === 0n || ctpAcc.amount === 0n) {
@@ -276,8 +279,8 @@ export class Matchmaker {
     }
 
     const [reqMint, ctpMint] = await Promise.all([
-      getMint(this.connection, reqAcc.mint),
-      getMint(this.connection, ctpAcc.mint),
+      getMint(this.connection, reqAcc.mint, undefined, reqProgram),
+      getMint(this.connection, ctpAcc.mint, undefined, ctpProgram),
     ]);
 
     // USD values for logging
@@ -291,65 +294,56 @@ export class Matchmaker {
       `↔ ${counterparty.owner.toBase58().slice(0,8)} ($${ctpUsd?.toFixed(2) ?? "?"} ${ctpAcc.mint.toBase58().slice(0,8)})`
     );
 
-    // Derive new ATAs
-    const [requesterNewAta] = PublicKey.findProgramAddressSync(
-      [sender.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), ctpAcc.mint.toBuffer()],
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
-    const [counterpartyNewAta] = PublicKey.findProgramAddressSync(
-      [counterparty.owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), reqAcc.mint.toBuffer()],
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
+    // Destination ATAs: sender RECEIVES the counterparty's mint; counterparty
+    // RECEIVES the requester's mint. Each ATA is derived under the token program
+    // that owns ITS mint (TOKEN vs TOKEN_2022).
+    const requesterNewAta = getAssociatedTokenAddressSync(ctpAcc.mint, sender, true, ctpProgram);
+    const counterpartyNewAta = getAssociatedTokenAddressSync(reqAcc.mint, counterparty.owner, true, reqProgram);
 
     const tx = new Transaction();
 
-    // Create new ATAs (idempotent — no-op if they already exist)
+    // Create destination ATAs (idempotent — no-op if they already exist)
     tx.add(
       createAssociatedTokenAccountIdempotentInstruction(
-        this.keypair.publicKey, // payer
-        requesterNewAta,
-        sender,
-        ctpAcc.mint
+        this.keypair.publicKey, requesterNewAta, sender, ctpAcc.mint, ctpProgram
       ),
       createAssociatedTokenAccountIdempotentInstruction(
-        this.keypair.publicKey,
-        counterpartyNewAta,
-        counterparty.owner,
-        reqAcc.mint
+        this.keypair.publicKey, counterpartyNewAta, counterparty.owner, reqAcc.mint, reqProgram
       )
     );
 
-    // THE SWITCHEROO: swap all tokens
+    // THE SWITCHEROO: requester's token → counterparty's new ATA, and
+    // counterparty's token → requester's (sender's) new ATA.
     tx.add(
       createTransferCheckedInstruction(
-        requester.ata,         // from
+        requester.ata,          // from (reqMint)
         reqAcc.mint,
-        requesterNewAta,       // to  (counterparty's token → sender's new ATA)  wait—
+        counterpartyNewAta,     // to: counterparty's ATA for reqMint
         this.keypair.publicKey, // authority (delegate)
         reqAcc.amount,
-        reqMint.decimals
+        reqMint.decimals,
+        [],
+        reqProgram
       ),
       createTransferCheckedInstruction(
-        counterparty.ata,      // from
+        counterparty.ata,       // from (ctpMint)
         ctpAcc.mint,
-        counterpartyNewAta,    // to
+        requesterNewAta,        // to: sender's ATA for ctpMint
         this.keypair.publicKey,
         ctpAcc.amount,
-        ctpMint.decimals
+        ctpMint.decimals,
+        [],
+        ctpProgram
       )
     );
 
-    // Close old ATAs → rent to matchmaker
+    // Close old (now-empty) ATAs → rent to matchmaker (we hold close authority)
     tx.add(
       createCloseAccountInstruction(
-        requester.ata,
-        this.keypair.publicKey, // destination: us
-        this.keypair.publicKey  // authority: close_authority we hold
+        requester.ata, this.keypair.publicKey, this.keypair.publicKey, [], reqProgram
       ),
       createCloseAccountInstruction(
-        counterparty.ata,
-        this.keypair.publicKey,
-        this.keypair.publicKey
+        counterparty.ata, this.keypair.publicKey, this.keypair.publicKey, [], ctpProgram
       )
     );
 
@@ -441,8 +435,8 @@ export class Matchmaker {
     let bestUsd = -1;
     for (const e of entries) {
       try {
-        const acc = await getAccount(this.connection, e.ata);
-        const mint = await getMint(this.connection, acc.mint);
+        const acc = await getAccount(this.connection, e.ata, undefined, e.programId);
+        const mint = await getMint(this.connection, acc.mint, undefined, e.programId);
         const usd = await getSwapBasedUsdValue(acc.mint.toBase58(), acc.amount, mint.decimals);
         if ((usd ?? 0) > bestUsd) {
           bestUsd = usd ?? 0;

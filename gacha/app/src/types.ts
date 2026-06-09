@@ -4,6 +4,8 @@ export interface DelegateEntry {
   owner: PublicKey;
   ata: PublicKey;
   mint: PublicKey;
+  /** Token program that owns this ATA (TOKEN or TOKEN_2022). */
+  programId: PublicKey;
   registeredAmount: bigint;
   registeredAt: number;
   isActive: boolean;

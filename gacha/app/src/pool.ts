@@ -87,6 +87,7 @@ export class GachaPool {
           owner,
           ata: pubkey,
           mint: new PublicKey(info.mint),
+          programId,
           registeredAmount: amount,
           registeredAt: Date.now(),
           isActive: true,
