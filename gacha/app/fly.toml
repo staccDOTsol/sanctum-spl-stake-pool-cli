@@ -13,11 +13,12 @@ primary_region = "iad"
 [[services]]
   internal_port = 3000
   protocol = "tcp"
+  processes = ["app"]
 
-  # Health check so Fly knows the process is alive
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
   [[services.tcp_checks]]
     interval = "15s"
     timeout = "2s"
-
-[processes]
-  matchmaker = "node dist/index.js matchmaker"
