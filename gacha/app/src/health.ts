@@ -1,4 +1,6 @@
 import { createServer, IncomingMessage, ServerResponse } from "http";
+import { readFileSync, existsSync } from "fs";
+import { join, resolve } from "path";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import type { DividendLedger } from "./dividend.js";
 import type { SwapHistory } from "./history.js";
@@ -35,13 +37,40 @@ function json(res: ServerResponse, code: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+// Static gacha UI (bundled by web/gacha-standalone, copied into ./ui at build).
+const UI_DIR = resolve(process.env.UI_DIR ?? "./ui");
+const CONTENT_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".ico": "image/x-icon",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".json": "application/json",
+};
+
+/** Serve a file from the UI dir if it exists. Returns true if it handled the response. */
+function tryServeStatic(pathname: string, res: ServerResponse): boolean {
+  // map "/" → index.html; strip leading slash; block path traversal
+  const rel = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  if (rel.includes("..")) return false;
+  const file = join(UI_DIR, rel);
+  if (!file.startsWith(UI_DIR) || !existsSync(file)) return false;
+  const ext = file.slice(file.lastIndexOf("."));
+  res.writeHead(200, { "Content-Type": CONTENT_TYPES[ext] ?? "application/octet-stream" });
+  res.end(readFileSync(file));
+  return true;
+}
+
 export function startHealthServer(): void {
   const port = parseInt(process.env.PORT ?? "3000", 10);
 
   createServer((req: IncomingMessage, res: ServerResponse) => {
-    const url = req.url ?? "/";
+    // Alias /api/gacha/* → /* so the same UI build works inside Next or here.
+    const url = (req.url ?? "/").replace(/^\/api\/gacha(?=\/|$)/, "") || "/";
+    const pathname = url.split("?")[0];
 
-    if (url === "/" || url === "/health") {
+    if (pathname === "/health") {
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("ok");
       return;
@@ -143,9 +172,12 @@ export function startHealthServer(): void {
       return;
     }
 
+    // Static gacha UI (and "/" → index.html). JSON routes above take priority.
+    if (req.method === "GET" && tryServeStatic(pathname, res)) return;
+
     res.writeHead(404);
     res.end("not found");
   }).listen(port, () => {
-    console.log(`[health] listening on :${port}`);
+    console.log(`[health] listening on :${port}  (ui: ${UI_DIR})`);
   });
 }

@@ -31,6 +31,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/webpack": "^5.28.5",
+    "esbuild": "^0.28.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
