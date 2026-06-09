@@ -56,7 +56,18 @@ export class Matchmaker {
     console.log(`[matchmaker] pubkey: ${this.keypair.publicKey.toBase58()}`);
     console.log(`[matchmaker] min roll fee: ${MIN_ROLL_FEE / LAMPORTS_PER_SOL} SOL`);
 
-    await this.pool.sync();
+    // Initial sync — retry with backoff so 429s don't crash the process
+    {
+      let delay = 5_000;
+      while (true) {
+        try { await this.pool.sync(); break; }
+        catch (err) {
+          console.warn(`[matchmaker] initial pool sync failed, retry in ${delay / 1000}s:`, (err as Error).message);
+          await new Promise(r => setTimeout(r, delay));
+          delay = Math.min(delay * 2, 120_000);
+        }
+      }
+    }
 
     // Watch for incoming SOL transfers
     this.connection.onAccountChange(
@@ -75,10 +86,10 @@ export class Matchmaker {
       "confirmed"
     );
 
-    // Init balance
-    this.lastBalance = BigInt(
-      await this.connection.getBalance(this.keypair.publicKey)
-    );
+    // Init balance — getBalance can also 429 briefly
+    try {
+      this.lastBalance = BigInt(await this.connection.getBalance(this.keypair.publicKey));
+    } catch { /* will be corrected on first account-change event */ }
 
     // Periodic pool resync
     setInterval(() => this.pool.sync().catch(console.error), 30_000);
