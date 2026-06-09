@@ -2,7 +2,7 @@
 import "dotenv/config";
 import { startHealthServer, registerLedger, registerHistory, registerPool, registerJackpot } from "./health.js";
 import { Command } from "commander";
-import { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL, SystemProgram, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import { getAccount, getMint } from "@solana/spl-token";
 import bs58 from "bs58";
 import { Matchmaker } from "./matchmaker.js";
@@ -183,6 +183,22 @@ program
         `${(r.pendingLamports / 1e9).toFixed(6)}`
       );
     }
+  });
+
+program
+  .command("sweep <dest> <sol>")
+  .description("Send SOL from the matchmaker wallet to a destination (admin)")
+  .action(async (dest: string, sol: string) => {
+    const kp = loadKeypair("MATCHMAKER_KEYPAIR");
+    const connection = getConnection();
+    const lamports = Math.floor(parseFloat(sol) * LAMPORTS_PER_SOL);
+    const bal = await connection.getBalance(kp.publicKey);
+    console.log(`Matchmaker ${kp.publicKey.toBase58()} balance: ${(bal / LAMPORTS_PER_SOL).toFixed(6)} SOL`);
+    const tx = new Transaction().add(
+      SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: new PublicKey(dest), lamports })
+    );
+    const sig = await sendAndConfirmTransaction(connection, tx, [kp], { commitment: "confirmed" });
+    console.log(`Swept ${sol} SOL → ${dest}: ${sig}`);
   });
 
 program.parseAsync(process.argv).catch(err => { console.error(err); process.exit(1); });
