@@ -86,9 +86,15 @@ export default function LaunchPage() {
       let fileUrl = "";
       if (form.file) {
         addLog(`Encrypting ${form.file.name} with Lit Protocol…`);
-        const { encryptBytes } = await import("@/lib/lit");
-        const rawBytes    = new Uint8Array(await form.file.arrayBuffer());
-        const encrypted   = await encryptBytes(rawBytes, form.file.type || "application/octet-stream", form.file.name);
+        // Server-side encryption — avoids browser Lit SDK failures on mobile
+        const fd = new FormData();
+        fd.append("file", form.file);
+        const encRes = await fetch("/api/lit/encrypt", { method: "POST", body: fd });
+        if (!encRes.ok) {
+          const { error } = await encRes.json().catch(() => ({ error: "Encryption failed" }));
+          throw new Error(error);
+        }
+        const encrypted   = await encRes.json();
         const payloadJson = JSON.stringify(encrypted);
         const payloadFile = new File([payloadJson], "encrypted-payload.json", { type: "application/json" });
         const pathname    = `content/${Date.now()}-${form.file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}.enc.json`;
