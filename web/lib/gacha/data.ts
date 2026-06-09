@@ -260,14 +260,22 @@ export function pullFromSwap(rec: SwapRecord, meta?: { symbol?: string; name?: s
   };
 }
 
-// Fetch token symbol/name for a mint (Jupiter token API). Best-effort.
+// Fetch token symbol/name for a mint (Jupiter token API). Cached + best-effort
+// so repeated refreshes don't trip rate limits.
+const _metaCache = new Map<string, { symbol?: string; name?: string }>();
 export async function fetchTokenMeta(mint: string): Promise<{ symbol?: string; name?: string }> {
+  const hit = _metaCache.get(mint);
+  if (hit) return hit;
+  let meta: { symbol?: string; name?: string } = {};
   try {
     const r = await fetch(`https://lite-api.jup.ag/tokens/v1/token/${mint}`, { cache: "force-cache" });
-    if (!r.ok) return {};
-    const j = await r.json();
-    return { symbol: j.symbol, name: j.name };
-  } catch { return {}; }
+    if (r.ok) {
+      const j = await r.json();
+      if (j && (j.symbol || j.name)) meta = { symbol: j.symbol, name: j.name };
+    }
+  } catch { /* best-effort */ }
+  _metaCache.set(mint, meta);
+  return meta;
 }
 
 // ─── Live matchmaker stats ──────────────────────────────────────────────────

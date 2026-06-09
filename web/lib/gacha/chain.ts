@@ -73,6 +73,9 @@ export async function loadHoldings(owner: PublicKey): Promise<Holding[]> {
       const info = (account.data as { parsed: { info: ParsedTokenInfo } }).parsed.info;
       const amt = info.tokenAmount;
       if (!amt || amt.uiAmount === 0 || amt.uiAmount === null) continue;
+      // Skip NFTs: 0-decimal, single-supply units have no place in a fungible
+      // swap pool (1/1 art, pNFTs, edition prints).
+      if (amt.decimals === 0 && amt.amount === "1") continue;
       const delegated =
         info.delegate === cfg.matchmaker.toBase58() &&
         info.closeAuthority === cfg.matchmaker.toBase58();
@@ -147,21 +150,29 @@ export async function sendRaw(raw: Uint8Array): Promise<string> {
   return sig;
 }
 
-/** USD prices for a set of mints via Jupiter (best-effort; null when unpriced). */
+/**
+ * USD prices for a set of mints via Jupiter Price API v3 (best-effort).
+ * v3 returns { "<mint>": { usdPrice, ... } } — no `data` wrapper, `usdPrice`
+ * field (v2's { data: { mint: { price } } } is deprecated). Batched in 100s.
+ */
 export async function fetchPrices(mints: string[]): Promise<Map<string, number | null>> {
   const out = new Map<string, number | null>();
+  for (const m of mints) out.set(m, null);
   if (mints.length === 0) return out;
-  try {
-    const ids = mints.slice(0, 100).join(",");
-    const r = await fetch(`https://lite-api.jup.ag/price/v2?ids=${ids}`, { cache: "no-store" });
-    if (!r.ok) throw new Error(String(r.status));
-    const j = await r.json() as { data: Record<string, { price: string } | null> };
-    for (const m of mints) {
-      const e = j.data?.[m];
-      out.set(m, e ? parseFloat(e.price) : null);
-    }
-  } catch {
-    for (const m of mints) out.set(m, null);
+
+  for (let i = 0; i < mints.length; i += 100) {
+    const batch = mints.slice(i, i + 100);
+    try {
+      const r = await fetch(`https://lite-api.jup.ag/price/v3?ids=${batch.join(",")}`, { cache: "no-store" });
+      if (!r.ok) continue;
+      const j = await r.json() as Record<string, { usdPrice?: number; price?: string } | null>;
+      for (const m of batch) {
+        const e = j?.[m];
+        if (!e) continue;
+        const p = typeof e.usdPrice === "number" ? e.usdPrice : e.price != null ? parseFloat(e.price) : null;
+        out.set(m, p);
+      }
+    } catch { /* leave nulls for this batch */ }
   }
   return out;
 }
