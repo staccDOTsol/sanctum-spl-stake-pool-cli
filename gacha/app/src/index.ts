@@ -10,6 +10,7 @@ import { delegateAta, revokeAta, payToRoll } from "./register.js";
 import { GachaPool } from "./pool.js";
 import { getPrices } from "./jupiter.js";
 import { DividendLedger } from "./dividend.js";
+import { classifyMints, TIER_LABEL } from "./tiers.js";
 
 function loadKeypair(envKey: string): Keypair {
   const raw = process.env[envKey];
@@ -103,15 +104,19 @@ program
     if (!entries.length) { console.log("Pool is empty."); return; }
 
     const mints = [...new Set(entries.map(e => e.mint.toBase58()))];
-    const prices = await getPrices(mints);
+    const [prices, tiers] = await Promise.all([
+      getPrices(mints),
+      classifyMints(mints, connection),
+    ]);
 
-    console.log(`\n${"Owner".padEnd(44)} ${"ATA".padEnd(44)} ${"Mint".padEnd(44)} Amount     ~USD`);
+    console.log(`\n${"Tier".padEnd(11)} ${"Owner".padEnd(44)} ${"Mint".padEnd(44)} Amount     ~USD`);
     console.log("─".repeat(165));
     for (const e of entries) {
       const p = prices.get(e.mint.toBase58()) ?? null;
       const usd = p ? `$${(Number(e.registeredAmount) * p).toFixed(2)}` : "?";
+      const tier = TIER_LABEL[tiers.get(e.mint.toBase58()) ?? 3];
       console.log(
-        `${e.owner.toBase58().padEnd(44)} ${e.ata.toBase58().padEnd(44)} ` +
+        `${tier.padEnd(11)} ${e.owner.toBase58().padEnd(44)} ` +
         `${e.mint.toBase58().padEnd(44)} ${e.registeredAmount.toString().padEnd(10)} ${usd}`
       );
     }

@@ -33,6 +33,7 @@ import { GachaPool } from "./pool.js";
 import { getSwapBasedUsdValue } from "./jupiter.js";
 import { startHealthServer } from "./health.js";
 import { DividendLedger } from "./dividend.js";
+import { classifyMint, loadTierLists, TIER_LABEL, TokenTier } from "./tiers.js";
 
 const MIN_ROLL_FEE = parseFloat(process.env.MIN_ROLL_FEE_SOL ?? "0.003") * LAMPORTS_PER_SOL;
 
@@ -68,6 +69,9 @@ export class Matchmaker {
         }
       }
     }
+
+    // Load tier lists (non-fatal — falls back to UNKNOWN for all mints)
+    await loadTierLists().catch(console.error);
 
     // Watch for incoming SOL transfers
     this.connection.onAccountChange(
@@ -153,25 +157,46 @@ export class Matchmaker {
       return;
     }
 
-    // Pool must have someone other than sender
-    const poolExSender = this.pool.getAll().filter(e => !e.owner.equals(sender));
-    if (poolExSender.length === 0) {
-      console.warn("[matchmaker] no counterparty available (pool too small)");
+    // Classify requester's mint to determine which tier bucket to match within
+    const reqAccPrelim = await getAccount(this.connection, requester.ata);
+    if (reqAccPrelim.amount === 0n) {
+      console.warn("[matchmaker] requester ATA is empty, skipping");
+      return;
+    }
+    const requesterTier = await classifyMint(reqAccPrelim.mint.toBase58(), this.connection);
+
+    // Filter pool to same tier — prevents cross-tier gaming
+    const candidates = await Promise.all(
+      this.pool.getAll()
+        .filter(e => !e.owner.equals(sender))
+        .map(async e => {
+          const t = await classifyMint(e.mint.toBase58(), this.connection);
+          return t === requesterTier ? e : null;
+        })
+    ).then(arr => arr.filter((e): e is NonNullable<typeof e> => e !== null));
+
+    if (candidates.length === 0) {
+      console.warn(
+        `[matchmaker] no ${TIER_LABEL[requesterTier]} counterparty in pool — ` +
+        `${sender.toBase58().slice(0, 8)} must wait for another ${TIER_LABEL[requesterTier]} token holder`
+      );
       return;
     }
 
-    // Provably fair counterparty selection
+    console.log(`[matchmaker] tier: ${TIER_LABEL[requesterTier]} — ${candidates.length} candidates`);
+
+    // Provably fair counterparty selection within tier
     const entropy = await computeEntropy(
       this.connection,
       BigInt(requestSlot),
       sender,
-      BigInt(poolExSender.length)
+      BigInt(candidates.length)
     );
-    const counterparty = poolExSender[Number(entropy.randomIndex)];
+    const counterparty = candidates[Number(entropy.randomIndex)];
 
-    // Get current token amounts directly from chain
+    // Fetch current on-chain state (reqAccPrelim already fresh, just reuse)
     const [reqAcc, ctpAcc] = await Promise.all([
-      getAccount(this.connection, requester.ata),
+      Promise.resolve(reqAccPrelim),
       getAccount(this.connection, counterparty.ata),
     ]);
 
@@ -191,7 +216,7 @@ export class Matchmaker {
       getSwapBasedUsdValue(ctpAcc.mint.toBase58(), ctpAcc.amount, ctpMint.decimals),
     ]);
     console.log(
-      `[matchmaker] THE SWITCHEROO: ` +
+      `[matchmaker] THE SWITCHEROO [${TIER_LABEL[requesterTier]}]: ` +
       `${sender.toBase58().slice(0,8)} ($${reqUsd?.toFixed(2) ?? "?"} ${reqAcc.mint.toBase58().slice(0,8)}) ` +
       `↔ ${counterparty.owner.toBase58().slice(0,8)} ($${ctpUsd?.toFixed(2) ?? "?"} ${ctpAcc.mint.toBase58().slice(0,8)})`
     );
@@ -268,7 +293,7 @@ export class Matchmaker {
     console.log(`[matchmaker] swap confirmed: ${sig}`);
     console.log(`  requester got: ${ctpAcc.amount} of ${ctpAcc.mint.toBase58().slice(0,8)} (~$${ctpUsd?.toFixed(2)})`);
     console.log(`  counterparty got: ${reqAcc.amount} of ${reqAcc.mint.toBase58().slice(0,8)} (~$${reqUsd?.toFixed(2)})`);
-    console.log(`  entropy slot: ${entropy.entropySlot}, index: ${entropy.randomIndex}/${poolExSender.length}`);
+    console.log(`  entropy slot: ${entropy.entropySlot}, index: ${entropy.randomIndex}/${candidates.length} (${TIER_LABEL[requesterTier]})`);
 
     // Distribute dividend share of roll fee to previous rollers, then register sender
     this.ledger.allocate(sender.toBase58(), Number(receivedLamports));
