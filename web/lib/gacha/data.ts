@@ -121,6 +121,8 @@ export interface Pull {
   dividend: number;
   globalRollIndex: number;
   ts: number;
+  /** on-chain swap signature (real pulls only) — powers the OG share link */
+  signature?: string;
 }
 
 // Highest rarity in a batch (for 10-pull star tell + summary celebration)
@@ -257,6 +259,7 @@ export function pullFromSwap(rec: SwapRecord, meta?: { symbol?: string; name?: s
     dividend: 0,
     globalRollIndex: 0,
     ts: rec.ts,
+    signature: rec.signature,
   };
 }
 

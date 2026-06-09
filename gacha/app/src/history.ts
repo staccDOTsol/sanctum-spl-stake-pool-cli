@@ -149,6 +149,10 @@ export class SwapHistory {
     return this.state.swaps.slice(0, Math.min(limit, MAX_RECORDS));
   }
 
+  getBySignature(sig: string): SwapRecord | undefined {
+    return this.state.swaps.find(s => s.signature === sig);
+  }
+
   forPubkey(pubkey: string, limit = 50): SwapRecord[] {
     return this.state.swaps
       .filter(s => s.requester === pubkey || s.counterparty === pubkey)

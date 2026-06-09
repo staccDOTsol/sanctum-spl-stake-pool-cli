@@ -113,7 +113,13 @@ export function PnlCardModal({ mode, onClose }: { mode: Mode; onClose: () => voi
 
       {/* actions (not captured in the PNG) */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
-        <button onClick={share} style={btn("#1d9bf0")}>{sharing ? "Sharing…" : "📤 Share to X (with image)"}</button>
+        <button onClick={share} style={btn("#1d9bf0")}>{sharing ? "Sharing…" : "📤 Share to X"}</button>
+        {mode.kind === "single" && mode.pull.signature && (
+          <a
+            href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(tweetText)}&url=${encodeURIComponent("https://switcheroo.lol/c/" + mode.pull.signature)}`}
+            target="_blank" rel="noopener noreferrer" style={btn("#7CFFB2", false, "#06281a")}
+          >🔗 Tweet link</a>
+        )}
         <button onClick={savePng} style={btn("#b06bff")}>{saving ? "Saving…" : "⬇ Save PNG"}</button>
         <button onClick={onClose} style={btn("rgba(255,255,255,0.1)", true)}>Close</button>
       </div>
@@ -217,10 +223,10 @@ function buildTweet(mode: Mode): string {
   return `My SWITCHEROO career: ${pctStr(mode.stats.pct)} over ${mode.stats.count} switches, ${mode.stats.winRate.toFixed(0)}% win rate ⇄`;
 }
 
-function btn(bg: string, ghost = false): React.CSSProperties {
+function btn(bg: string, ghost = false, fg?: string): React.CSSProperties {
   return {
     padding: "11px 20px", borderRadius: 11, cursor: "pointer", border: ghost ? "1px solid rgba(255,255,255,0.18)" : "none",
-    background: bg, color: ghost ? "rgba(255,255,255,0.8)" : "#fff", fontWeight: 800, fontSize: 14,
+    background: bg, color: fg ?? (ghost ? "rgba(255,255,255,0.8)" : "#fff"), fontWeight: 800, fontSize: 14,
     fontFamily: "inherit", textDecoration: "none", display: "inline-block",
   };
 }

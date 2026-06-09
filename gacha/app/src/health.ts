@@ -65,7 +65,7 @@ function tryServeStatic(pathname: string, res: ServerResponse): boolean {
 export function startHealthServer(): void {
   const port = parseInt(process.env.PORT ?? "3000", 10);
 
-  createServer((req: IncomingMessage, res: ServerResponse) => {
+  createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // Alias /api/gacha/* → /* so the same UI build works inside Next or here.
     const url = (req.url ?? "/").replace(/^\/api\/gacha(?=\/|$)/, "") || "/";
     const pathname = url.split("?")[0];
@@ -84,6 +84,52 @@ export function startHealthServer(): void {
         "Access-Control-Allow-Headers": "Content-Type",
       });
       res.end();
+      return;
+    }
+
+    // ── Shareable card: /c/<sig> serves an OG/Twitter-card HTML page that
+    // unfurls into the PnL image (/og/<sig>.png) and redirects humans to the app.
+    const cardMatch = pathname.match(/^\/c\/([1-9A-HJ-NP-Za-km-z]{64,96})$/);
+    if (cardMatch) {
+      const sig = cardMatch[1];
+      const rec = _history?.getBySignature(sig);
+      const host = (req.headers["x-forwarded-host"] as string) || req.headers.host || "switcheroo.lol";
+      const img = `https://${host}/og/${sig}.png`;
+      const mult = rec?.multiplier != null ? rec.multiplier : null;
+      const title = mult != null ? `Switcheroo: ${mult.toFixed(2)}×` : "THE SWITCHEROO";
+      const desc = "Provably-fair token gacha on Solana. No house edge.";
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(
+        `<!DOCTYPE html><html><head><meta charset="utf-8"/>` +
+        `<title>${title}</title>` +
+        `<meta name="description" content="${desc}"/>` +
+        `<meta property="og:title" content="${title}"/>` +
+        `<meta property="og:description" content="${desc}"/>` +
+        `<meta property="og:image" content="${img}"/>` +
+        `<meta property="og:image:width" content="1200"/><meta property="og:image:height" content="630"/>` +
+        `<meta name="twitter:card" content="summary_large_image"/>` +
+        `<meta name="twitter:title" content="${title}"/>` +
+        `<meta name="twitter:description" content="${desc}"/>` +
+        `<meta name="twitter:image" content="${img}"/>` +
+        `<meta http-equiv="refresh" content="0; url=https://${host}/"/>` +
+        `</head><body>Redirecting to <a href="https://${host}/">switcheroo.lol</a>…</body></html>`
+      );
+      return;
+    }
+
+    const ogMatch = pathname.match(/^\/og\/([1-9A-HJ-NP-Za-km-z]{64,96})\.png$/);
+    if (ogMatch) {
+      const rec = _history?.getBySignature(ogMatch[1]);
+      if (!rec) { res.writeHead(404); res.end("not found"); return; }
+      try {
+        const { renderCardPng } = await import("./og.js");
+        const png = renderCardPng(rec);
+        res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" });
+        res.end(png);
+      } catch (e) {
+        console.warn("[og] render failed:", (e as Error).message);
+        res.writeHead(500); res.end("render failed");
+      }
       return;
     }
 
