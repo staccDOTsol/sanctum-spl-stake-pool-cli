@@ -278,6 +278,50 @@ export async function fetchTokenMeta(mint: string): Promise<{ symbol?: string; n
   return meta;
 }
 
+// ─── PnL stats (for shareable cards) ────────────────────────────────────────
+export interface PnlStats {
+  count: number;
+  fromUsd: number;
+  toUsd: number;
+  netUsd: number;
+  pct: number;        // net % return
+  wins: number;
+  winRate: number;    // 0..100
+  bestMult: number;
+  worstMult: number;
+}
+
+function statsFrom(rows: { fromUsd: number; toUsd: number; mult: number }[]): PnlStats {
+  const count = rows.length;
+  const fromUsd = rows.reduce((s, r) => s + r.fromUsd, 0);
+  const toUsd = rows.reduce((s, r) => s + r.toUsd, 0);
+  const wins = rows.filter(r => r.mult >= 1).length;
+  const mults = rows.map(r => r.mult);
+  return {
+    count, fromUsd, toUsd,
+    netUsd: toUsd - fromUsd,
+    pct: fromUsd > 0 ? ((toUsd - fromUsd) / fromUsd) * 100 : 0,
+    wins,
+    winRate: count > 0 ? (wins / count) * 100 : 0,
+    bestMult: mults.length ? Math.max(...mults) : 0,
+    worstMult: mults.length ? Math.min(...mults) : 0,
+  };
+}
+
+/** PnL across a batch of just-revealed pulls (per-1 or per-10). */
+export function pnlFromPulls(pulls: Pull[]): PnlStats {
+  return statsFrom(pulls.map(p => ({ fromUsd: p.fromUsd, toUsd: p.toUsd, mult: p.mult })));
+}
+
+/** Career PnL across all swaps this wallet INITIATED (requester == me). */
+export function pnlFromSwaps(swaps: SwapRecord[], me: string): PnlStats {
+  return statsFrom(
+    swaps
+      .filter(s => s.requester === me && s.multiplier !== null)
+      .map(s => ({ fromUsd: s.requesterUsd ?? 0, toUsd: s.counterpartyUsd ?? 0, mult: s.multiplier ?? 1 }))
+  );
+}
+
 // ─── Live matchmaker stats ──────────────────────────────────────────────────
 export interface LiveStats {
   poolSize: number;

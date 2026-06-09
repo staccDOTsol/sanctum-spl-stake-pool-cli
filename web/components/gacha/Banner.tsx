@@ -43,7 +43,7 @@ export function OddsBar() {
 export function Banner({
   connected, address, solBalance, holdingsCount, delegatedCount, delegatedUsd,
   pity, streak, jackpotSol, live, points, busyRoll,
-  onConnect, onApprove, onRoll, onHistory,
+  onConnect, onApprove, onRoll, onHistory, onPnl,
 }: {
   theme?: Theme;
   connected: boolean;
@@ -62,6 +62,7 @@ export function Banner({
   onApprove: () => void;
   onRoll: (count: number) => void;
   onHistory: () => void;
+  onPnl?: () => void;
 }) {
   const featured = POOL.legendary[0];
   const pityLeft = PITY_HARD - pity;
@@ -90,6 +91,7 @@ export function Banner({
               <span style={{ color: "rgba(255,255,255,0.55)" }}>{live.poolOwners ?? 0} players · {live.poolSize} tokens · {live.totalSwaps} swaps</span>
             </div>
           )}
+          {connected && onPnl && <button onClick={onPnl} style={pill}><span style={{ color: "rgba(255,255,255,0.55)" }}>📈 My PnL</span></button>}
           {connected && <button onClick={onHistory} style={pill}><span style={{ color: "rgba(255,255,255,0.55)" }}>⊞ Collection</span></button>}
           {connected ? (
             <div style={{ ...pill, gap: 8, cursor: "default" }}>

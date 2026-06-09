@@ -10,7 +10,9 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import { PublicKey } from "@solana/web3.js";
 import {
   THEMES, Pull, LiveStats, SwapRecord, topRarity, pullFromSwap, fetchTokenMeta, fmtSol,
+  pnlFromPulls, pnlFromSwaps,
 } from "@/lib/gacha/data";
+import { PnlCardModal, type PnlMode } from "@/components/gacha/PnlCard";
 import {
   getConfig, getSolBalance, loadHoldings, fetchPrices, registerOwner,
   buildDelegateTxs, buildRollTx, sendRaw, type Holding,
@@ -52,6 +54,8 @@ export default function GachaPage() {
   const [receipt, setReceipt] = useState<Pull | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<Pull[]>([]);
+  const [mySwaps, setMySwaps] = useState<SwapRecord[]>([]);
+  const [card, setCard] = useState<PnlMode | null>(null);
   const [jackpotWin, setJackpotWin] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const [shaking, shake] = useScreenShake();
@@ -98,7 +102,7 @@ export default function GachaPage() {
       });
     }).catch(() => {});
     fetch(`/api/gacha/swaps/${base}`).then(r => r.ok ? r.json() : null).then(async d => {
-      if (d?.swaps) setHistory(await mapPulls(d.swaps));
+      if (d?.swaps) { setMySwaps(d.swaps as SwapRecord[]); setHistory(await mapPulls(d.swaps)); }
     }).catch(() => {});
   }, []);
 
@@ -249,12 +253,14 @@ export default function GachaPage() {
             pity={pity} streak={streak} jackpotSol={jackpotSol} live={live} points={points} busyRoll={rollBusy}
             onConnect={() => setShowPicker(true)} onApprove={() => setShowApproval(true)}
             onRoll={doRoll} onHistory={() => setShowHistory(true)}
+            onPnl={wallet ? () => setCard({ kind: "overall", stats: pnlFromSwaps(mySwaps, wallet.publicKey.toBase58()), address: wallet.publicKey.toBase58() }) : undefined}
           />
         )}
         {stage === "reveal" && pulls[0] && (
           <Stage>
             <RevealCard pull={pulls[0]} intensity={INTENSITY} big onReceipt={() => setReceipt(pulls[0])} />
-            <AfterActions onAgain={() => doRoll(1)} onAgain10={() => doRoll(10)} onHome={reset} />
+            <AfterActions onAgain={() => doRoll(1)} onAgain10={() => doRoll(10)} onHome={reset}
+              onCard={() => setCard({ kind: "single", pull: pulls[0] })} />
           </Stage>
         )}
         {stage === "summary" && (
@@ -263,7 +269,8 @@ export default function GachaPage() {
               <div style={{ fontSize: 13, letterSpacing: "0.4em", color: THEME.hue, fontFamily: "var(--mono)", fontWeight: 700 }}>{pulls.length}× SWITCHEROO RESULTS</div>
             </div>
             <SummaryGrid pulls={pulls} onReceipt={setReceipt} />
-            <AfterActions onAgain={() => doRoll(1)} onAgain10={() => doRoll(10)} onHome={reset} />
+            <AfterActions onAgain={() => doRoll(1)} onAgain10={() => doRoll(10)} onHome={reset}
+              onCard={() => setCard({ kind: "batch", pulls, stats: pnlFromPulls(pulls) })} />
           </Stage>
         )}
       </div>
@@ -278,6 +285,7 @@ export default function GachaPage() {
           onApprove={onApprove} onClose={() => { if (!approvalBusy) { setShowApproval(false); setApprovalError(null); } }} />
       )}
       {receipt && <Receipt pull={receipt} onClose={() => setReceipt(null)} />}
+      {card && <PnlCardModal mode={card} onClose={() => setCard(null)} />}
       {jackpotWin > 0 && <JackpotWin amountSol={jackpotWin} onClose={() => setJackpotWin(0)} />}
       <HistoryDrawer open={showHistory} history={history} onClose={() => setShowHistory(false)}
         onReceipt={(p) => { setShowHistory(false); setReceipt(p); }} />
@@ -368,10 +376,13 @@ function Stage({ children }: { children: ReactNode }) {
   );
 }
 
-function AfterActions({ onAgain, onAgain10, onHome }: { onAgain: () => void; onAgain10: () => void; onHome: () => void }) {
+function AfterActions({ onAgain, onAgain10, onHome, onCard }: {
+  onAgain: () => void; onAgain10: () => void; onHome: () => void; onCard: () => void;
+}) {
   return (
     <div style={{ display: "flex", gap: 12, marginTop: 34, flexWrap: "wrap", justifyContent: "center" }}>
       <button onClick={onHome} style={ghostBtn}>← Banner</button>
+      <button onClick={onCard} style={ghostBtn}>📸 PnL card</button>
       <button onClick={onAgain} style={ghostBtn}>Wish ×1</button>
       <button onClick={onAgain10} style={primaryBtn}>Wish ×10 again</button>
     </div>
