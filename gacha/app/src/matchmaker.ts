@@ -32,11 +32,13 @@ import { computeEntropy } from "./randomness.js";
 import { GachaPool } from "./pool.js";
 import { getSwapBasedUsdValue } from "./jupiter.js";
 import { startHealthServer } from "./health.js";
+import { DividendLedger } from "./dividend.js";
 
 const MIN_ROLL_FEE = parseFloat(process.env.MIN_ROLL_FEE_SOL ?? "0.003") * LAMPORTS_PER_SOL;
 
 export class Matchmaker {
   private pool: GachaPool;
+  private ledger: DividendLedger;
   private processing = new Set<string>();
   private lastBalance = 0n;
 
@@ -45,7 +47,10 @@ export class Matchmaker {
     private keypair: Keypair
   ) {
     this.pool = new GachaPool(connection, keypair.publicKey);
+    this.ledger = new DividendLedger();
   }
+
+  getLedger(): DividendLedger { return this.ledger; }
 
   async run(): Promise<void> {
     console.log(`[matchmaker] pubkey: ${this.keypair.publicKey.toBase58()}`);
@@ -108,7 +113,7 @@ export class Matchmaker {
     this.processing.add(key);
 
     try {
-      await this.executeRollForSender(sender.pubkey, sigs[0].slot);
+      await this.executeRollForSender(sender.pubkey, sigs[0].slot, receivedLamports);
     } catch (err) {
       console.error(`[matchmaker] roll failed for ${key}:`, err);
     } finally {
@@ -118,7 +123,8 @@ export class Matchmaker {
 
   private async executeRollForSender(
     sender: PublicKey,
-    requestSlot: number
+    requestSlot: number,
+    receivedLamports: bigint
   ): Promise<void> {
     await this.pool.syncIfStale();
 
@@ -252,6 +258,11 @@ export class Matchmaker {
     console.log(`  requester got: ${ctpAcc.amount} of ${ctpAcc.mint.toBase58().slice(0,8)} (~$${ctpUsd?.toFixed(2)})`);
     console.log(`  counterparty got: ${reqAcc.amount} of ${reqAcc.mint.toBase58().slice(0,8)} (~$${reqUsd?.toFixed(2)})`);
     console.log(`  entropy slot: ${entropy.entropySlot}, index: ${entropy.randomIndex}/${poolExSender.length}`);
+
+    // Distribute dividend share of roll fee to previous rollers, then register sender
+    this.ledger.allocate(sender.toBase58(), Number(receivedLamports));
+    // Fire-and-forget payout — failures accumulate and retry next roll
+    this.ledger.payPendingDividends(this.connection, this.keypair).catch(console.error);
 
     this.pool.remove(requester.ata);
     this.pool.remove(counterparty.ata);
