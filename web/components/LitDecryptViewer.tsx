@@ -9,7 +9,7 @@
  * containing only { ciphertext, dataToEncryptHash, contentType }, never plaintext.
  */
 import { useState, useEffect } from "react";
-import type { EncryptedPayload } from "@/lib/lit";
+import { litAuthMessage, makeAuthSig, type EncryptedPayload } from "@/lib/litConditions";
 
 interface Props {
   encryptedPayloadUrl?: string;
@@ -26,30 +26,45 @@ function formatBytes(n: number) {
   return `${n} B`;
 }
 
+/** Map a MIME type or legacy form value ("png", "audio", …) to a render kind. */
+function contentKind(type: string): "text" | "image" | "audio" | "video" | "other" {
+  const t = type.toLowerCase();
+  if (t.includes("text") || t === "json" || t.includes("document")) return "text";
+  if (t.includes("image") || t === "png" || t === "jpeg" || t === "jpg" || t === "gif" || t === "webp") return "image";
+  if (t.includes("audio")) return "audio";
+  if (t.includes("video")) return "video";
+  return "other";
+}
+
 export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, ratio, totalBytes }: Props) {
   const [state, setState]         = useState<DecryptState>("idle");
   const [error, setError]         = useState<string | null>(null);
   const [decrypted, setDecrypted] = useState<Uint8Array | null>(null);
   const [dataUrl, setDataUrl]     = useState<string | null>(null);
+  // Real MIME type from the encrypted payload (the prop may be a legacy
+  // form value like "png"); set once the payload JSON is fetched.
+  const [mime, setMime]           = useState<string | null>(null);
 
   const revealedBytes = Math.floor(ratio * totalBytes);
   const leakPct       = Math.round(ratio * 100);
+  const effectiveType = mime ?? contentType;
+  const kind          = contentKind(effectiveType);
 
   // Build preview once decrypted
   useEffect(() => {
     if (!decrypted) return;
     const slice = decrypted.slice(0, revealedBytes);
-    if (contentType.includes("text") || contentType === "text") {
+    if (kind === "text") {
       // text/document: show as UTF-8
       setDataUrl(null);
     } else {
       // image/audio/video: create a blob URL for the revealed slice
-      const blob = new Blob([slice], { type: contentType });
+      const blob = new Blob([slice], { type: effectiveType });
       const url  = URL.createObjectURL(blob);
       setDataUrl(url);
       return () => URL.revokeObjectURL(url);
     }
-  }, [decrypted, revealedBytes, contentType]);
+  }, [decrypted, revealedBytes, kind, effectiveType]);
 
   async function handleDecrypt() {
     if (!encryptedPayloadUrl) { setError("No encrypted content URL"); return; }
@@ -75,33 +90,42 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
         setState("done");
         return;
       }
+      if (payload.contentType) setMime(payload.contentType);
 
       // 2. Sign auth message browser-side (wallet stays on device)
       setState("signing");
-      const solana = (window as unknown as {
-        solana?: {
-          publicKey?: { toBase58?: () => string };
-          signMessage: (m: Uint8Array) => Promise<{ signature: Uint8Array }>;
-        };
-      }).solana;
-      const pubkey = solana?.publicKey?.toBase58?.();
-      if (!pubkey || !solana) throw new Error("Connect your Solana wallet first");
+      type SignMessageWallet = {
+        publicKey?: { toBase58?: () => string } | null;
+        connect?: () => Promise<unknown>;
+        signMessage: (m: Uint8Array, e?: string) => Promise<{ signature: Uint8Array } | Uint8Array>;
+      };
+      const w = window as unknown as { solana?: SignMessageWallet; solflare?: SignMessageWallet };
+      const wallet =
+        (w.solana?.publicKey?.toBase58?.() && w.solana) ||
+        (w.solflare?.publicKey?.toBase58?.() && w.solflare) ||
+        w.solana || w.solflare;
+      if (!wallet) throw new Error("No Solana wallet found — install Phantom or Solflare");
+      if (!wallet.publicKey?.toBase58?.()) {
+        try {
+          await wallet.connect?.();
+        } catch {
+          throw new Error("Connect your Solana wallet first");
+        }
+      }
+      const pubkey = wallet.publicKey?.toBase58?.();
+      if (!pubkey) throw new Error("Connect your Solana wallet first");
 
-      const message  = `leak.markets: authorize Lit Protocol decryption for ${pubkey}`;
+      // Lit nodes verify an ed25519 signature (hex) over the canonical body
+      const message  = litAuthMessage();
       const msgBytes = new TextEncoder().encode(message);
       let sigBytes: Uint8Array;
       try {
-        const { signature } = await solana.signMessage(msgBytes);
-        sigBytes = signature;
+        const signed = await wallet.signMessage(msgBytes, "utf8");
+        sigBytes = signed instanceof Uint8Array ? signed : signed.signature;
       } catch (e) {
         throw new Error(`Wallet signing failed: ${e instanceof Error ? e.message : e}`);
       }
-      const authSig = {
-        sig:           Buffer.from(sigBytes).toString("base64"),
-        derivedVia:    "solana.signMessage",
-        signedMessage: message,
-        address:       pubkey,
-      };
+      const authSig = makeAuthSig(pubkey, message, sigBytes);
 
       // 3. Server-side decryption — avoids browser Lit SDK failures on mobile
       setState("decrypting");
@@ -139,7 +163,7 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
   // Revealed text preview (proportional to ratio)
   const textPreview = (() => {
     if (!decrypted || state !== "done") return null;
-    if (!contentType.includes("text") && contentType !== "text") return null;
+    if (kind !== "text") return null;
     const full = new TextDecoder().decode(decrypted);
     return full.slice(0, revealedBytes);
   })();
@@ -177,13 +201,13 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
           </div>
         ) : dataUrl ? (
           <div className="rounded-xl overflow-hidden border border-white/8">
-            {contentType.includes("image") ? (
+            {kind === "image" ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={dataUrl} alt="Decrypted content" className="w-full max-h-96 object-contain" />
-            ) : contentType.includes("audio") ? (
+            ) : kind === "audio" ? (
               // eslint-disable-next-line jsx-a11y/media-has-caption
               <audio controls src={dataUrl} className="w-full p-3" />
-            ) : contentType.includes("video") ? (
+            ) : kind === "video" ? (
               // eslint-disable-next-line jsx-a11y/media-has-caption
               <video controls src={dataUrl} className="w-full max-h-64" />
             ) : (

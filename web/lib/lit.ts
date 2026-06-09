@@ -1,26 +1,30 @@
 /**
- * Lit Protocol v6 utilities for leak.markets.
+ * Browser-side Lit Protocol helpers for leak.markets.
  *
- * Encryption: symmetric AES key is encrypted under the Lit network's BLS key,
- * conditioned on the viewer holding ≥1 LEAK token on Solana mainnet.
- *
- * Decryption: user signs a message with their Solana wallet → authSig →
- * Lit nodes verify the access condition and return key shares → decrypt.
- *
- * The ratio (from pool reserves) then controls HOW MANY bytes are shown
- * client-side; Lit controls WHETHER the user can decrypt at all.
+ * Production encrypt/decrypt happens server-side via /api/lit/* (the browser
+ * Lit SDK fails on iOS Safari); these helpers remain for local/desktop use.
+ * Conditions and authSig format live in ./litConditions so the server routes
+ * and this module can never drift apart.
  *
  * BROWSER-ONLY: never import this from a server component / route.
  */
 
 import { LitNodeClient } from "@lit-protocol/lit-node-client";
+import {
+  LEAK_MINT,
+  makeLeakConditions,
+  makeAuthSig,
+  litAuthMessage,
+  type EncryptedPayload,
+} from "./litConditions";
 
-export const LEAK_MINT = "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS";
+export { LEAK_MINT, makeLeakConditions, makeAuthSig, litAuthMessage };
+export type { EncryptedPayload };
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const LIT_NET: any = process.env.NEXT_PUBLIC_LIT_NETWORK ?? "datil";
 
 let _client: LitNodeClient | null = null;
-let _connecting = false;
 let _connectPromise: Promise<LitNodeClient> | null = null;
 
 export async function getLitClient(): Promise<LitNodeClient> {
@@ -32,36 +36,6 @@ export async function getLitClient(): Promise<LitNodeClient> {
     return _client;
   })();
   return _connectPromise;
-}
-
-/** Solana RPC condition: viewer wallet holds ≥1 LEAK token. */
-export function makeLeakConditions() {
-  return [
-    {
-      conditionType: "solRpc" as const,
-      method:        "getTokenAccountsByOwner",
-      params: [
-        ":userAddress",
-        JSON.stringify({ mint: LEAK_MINT }),
-        JSON.stringify({ encoding: "jsonParsed" }),
-      ],
-      pdaInterface: { offset: 0, fields: {} as Record<string, unknown> },
-      pdaKey:  "",
-      chain:   "solana" as const,
-      returnValueTest: {
-        key:        "$.value[0].account.data.parsed.info.tokenAmount.uiAmount",
-        comparator: ">" as const,
-        value:      "0",
-      },
-    },
-  ];
-}
-
-export interface EncryptedPayload {
-  ciphertext:        string; // base64
-  dataToEncryptHash: string; // hex
-  contentType:       string; // MIME
-  filename?:         string;
 }
 
 /** Encrypt raw bytes and return the payload (no Lit connection needed). */
@@ -77,20 +51,6 @@ export async function encryptBytes(
     dataToEncrypt:    data,
   });
   return { ciphertext, dataToEncryptHash, contentType, filename };
-}
-
-/** Build a Solana authSig from an already-signed message. */
-export function makeAuthSig(
-  pubkey:        string,
-  message:       string,
-  signatureBytes: Uint8Array,
-): object {
-  return {
-    sig:           Buffer.from(signatureBytes).toString("base64"),
-    derivedVia:    "solana.signMessage",
-    signedMessage: message,
-    address:       pubkey,
-  };
 }
 
 /** Decrypt bytes using an authSig (user must hold LEAK). */
@@ -112,13 +72,17 @@ export async function decryptBytes(
 
 /** Sign the Lit auth message with a Solana wallet and return authSig. */
 export async function signForLit(pubkey: string): Promise<object> {
-  const message = `leak.markets: authorize Lit Protocol decryption for ${pubkey}`;
+  const message  = litAuthMessage();
   const msgBytes = new TextEncoder().encode(message);
 
-  // Phantom / Solflare both expose window.solana.signMessage
-  const w = (window as unknown as { solana?: { signMessage: (m: Uint8Array) => Promise<{ signature: Uint8Array }> } }).solana;
-  if (!w) throw new Error("No Solana wallet found");
+  // Phantom / Solflare both expose signMessage
+  const w = (window as unknown as {
+    solana?:   { signMessage: (m: Uint8Array, e?: string) => Promise<{ signature: Uint8Array }> };
+    solflare?: { signMessage: (m: Uint8Array, e?: string) => Promise<{ signature: Uint8Array }> };
+  });
+  const provider = w.solana ?? w.solflare;
+  if (!provider) throw new Error("No Solana wallet found");
 
-  const { signature } = await w.signMessage(msgBytes);
+  const { signature } = await provider.signMessage(msgBytes, "utf8");
   return makeAuthSig(pubkey, message, signature);
 }

@@ -7,6 +7,7 @@
  * Body: multipart/form-data with field "file"
  */
 import { NextRequest, NextResponse } from "next/server";
+import { makeLeakConditions } from "@/lib/litConditions";
 
 export const runtime = "nodejs";
 
@@ -19,28 +20,6 @@ async function getLitServer() {
   _client = new LitNodeClient({ litNetwork: "datil", debug: false });
   await _client.connect();
   return _client;
-}
-
-function makeLeakConditions() {
-  return [
-    {
-      conditionType: "solRpc" as const,
-      method:        "getTokenAccountsByOwner",
-      params: [
-        ":userAddress",
-        JSON.stringify({ mint: "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS" }),
-        JSON.stringify({ encoding: "jsonParsed" }),
-      ],
-      pdaInterface: { offset: 0, fields: {} as Record<string, unknown> },
-      pdaKey:  "",
-      chain:   "solana" as const,
-      returnValueTest: {
-        key:        "$.value[0].account.data.parsed.info.tokenAmount.uiAmount",
-        comparator: ">" as const,
-        value:      "0",
-      },
-    },
-  ];
 }
 
 export async function POST(req: NextRequest) {

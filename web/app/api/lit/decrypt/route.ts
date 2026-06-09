@@ -8,6 +8,7 @@
  * Response: { data: string (base64), contentType: string }
  */
 import { NextRequest, NextResponse } from "next/server";
+import { makeLeakConditions } from "@/lib/litConditions";
 
 export const runtime = "nodejs";
 
@@ -22,35 +23,13 @@ async function getLitServer() {
   return _client;
 }
 
-function makeLeakConditions() {
-  return [
-    {
-      conditionType: "solRpc" as const,
-      method:        "getTokenAccountsByOwner",
-      params: [
-        ":userAddress",
-        JSON.stringify({ mint: "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS" }),
-        JSON.stringify({ encoding: "jsonParsed" }),
-      ],
-      pdaInterface: { offset: 0, fields: {} as Record<string, unknown> },
-      pdaKey:  "",
-      chain:   "solana" as const,
-      returnValueTest: {
-        key:        "$.value[0].account.data.parsed.info.tokenAmount.uiAmount",
-        comparator: ">" as const,
-        value:      "0",
-      },
-    },
-  ];
-}
-
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json() as {
       ciphertext:        string;
       dataToEncryptHash: string;
       contentType?:      string;
-      authSig:           object;
+      authSig:           { sig: string; derivedVia: string; signedMessage: string; address: string };
     };
 
     const { ciphertext, dataToEncryptHash, contentType, authSig } = body;
