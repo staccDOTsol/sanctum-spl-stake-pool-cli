@@ -33,13 +33,17 @@ import { GachaPool } from "./pool.js";
 import { getSwapBasedUsdValue } from "./jupiter.js";
 import { startHealthServer } from "./health.js";
 import { DividendLedger } from "./dividend.js";
+import { SwapHistory, rarityForMult } from "./history.js";
 import { classifyMint, loadTierLists, TIER_LABEL, TokenTier } from "./tiers.js";
 
 const MIN_ROLL_FEE = parseFloat(process.env.MIN_ROLL_FEE_SOL ?? "0.003") * LAMPORTS_PER_SOL;
+/** One payment of N× the roll fee buys N swaps (the 10-pull), capped here. */
+const MAX_ROLLS_PER_PAYMENT = parseInt(process.env.MAX_ROLLS_PER_PAYMENT ?? "10");
 
 export class Matchmaker {
   private pool: GachaPool;
   private ledger: DividendLedger;
+  private history: SwapHistory;
   private processing = new Set<string>();
   private lastBalance = 0n;
 
@@ -49,9 +53,12 @@ export class Matchmaker {
   ) {
     this.pool = new GachaPool(connection, keypair.publicKey);
     this.ledger = new DividendLedger();
+    this.history = new SwapHistory();
   }
 
   getLedger(): DividendLedger { return this.ledger; }
+  getHistory(): SwapHistory { return this.history; }
+  getPool(): GachaPool { return this.pool; }
 
   async run(): Promise<void> {
     console.log(`[matchmaker] pubkey: ${this.keypair.publicKey.toBase58()}`);
@@ -128,7 +135,25 @@ export class Matchmaker {
     this.processing.add(key);
 
     try {
-      await this.executeRollForSender(sender.pubkey, sigs[0].slot, receivedLamports);
+      // Multi-roll: a payment of N× the fee buys N swaps (the "10-pull")
+      const rolls = Math.max(
+        1,
+        Math.min(MAX_ROLLS_PER_PAYMENT, Number(receivedLamports / BigInt(MIN_ROLL_FEE)))
+      );
+      const feePerRoll = receivedLamports / BigInt(rolls);
+      if (rolls > 1) console.log(`[matchmaker] multi-roll: ${rolls} swaps for ${key.slice(0, 8)}`);
+
+      for (let i = 0; i < rolls; i++) {
+        // First roll is seeded by the payment slot; subsequent rolls use the
+        // current slot so every pull in a 10-pull gets fresh entropy.
+        const slot = i === 0 ? sigs[0].slot : await this.connection.getSlot("confirmed");
+        try {
+          await this.executeRollForSender(sender.pubkey, slot, feePerRoll);
+        } catch (err) {
+          console.error(`[matchmaker] roll ${i + 1}/${rolls} failed for ${key}:`, err);
+          break;
+        }
+      }
     } catch (err) {
       console.error(`[matchmaker] roll failed for ${key}:`, err);
     } finally {
@@ -166,7 +191,7 @@ export class Matchmaker {
     const requesterTier = await classifyMint(reqAccPrelim.mint.toBase58(), this.connection);
 
     // Filter pool to same tier — prevents cross-tier gaming
-    const candidates = await Promise.all(
+    let candidates = await Promise.all(
       this.pool.getAll()
         .filter(e => !e.owner.equals(sender))
         .map(async e => {
@@ -181,6 +206,36 @@ export class Matchmaker {
         `${sender.toBase58().slice(0, 8)} must wait for another ${TIER_LABEL[requesterTier]} token holder`
       );
       return;
+    }
+
+    // Hard pity: after PITY_HARD consecutive losing rolls the candidate set is
+    // restricted to counterparties worth at least the requester's bag — a
+    // guaranteed up-only roll. Selection within the set stays slot-hash random,
+    // and the deterministic filter rule is itself auditable from the receipt.
+    const pityTriggered = this.history.pityActive(sender.toBase58());
+    if (pityTriggered) {
+      const reqMintPrelim = await getMint(this.connection, reqAccPrelim.mint);
+      const reqUsdPrelim = await getSwapBasedUsdValue(
+        reqAccPrelim.mint.toBase58(), reqAccPrelim.amount, reqMintPrelim.decimals
+      );
+      if (reqUsdPrelim !== null) {
+        const upOnly = (await Promise.all(
+          candidates.map(async e => {
+            try {
+              const acc = await getAccount(this.connection, e.ata);
+              const mint = await getMint(this.connection, acc.mint);
+              const usd = await getSwapBasedUsdValue(acc.mint.toBase58(), acc.amount, mint.decimals);
+              return (usd ?? 0) >= reqUsdPrelim ? e : null;
+            } catch { return null; }
+          })
+        )).filter((e): e is NonNullable<typeof e> => e !== null);
+        if (upOnly.length > 0) {
+          console.log(`[matchmaker] PITY for ${sender.toBase58().slice(0, 8)}: up-only set ${upOnly.length}/${candidates.length}`);
+          candidates = upOnly;
+        } else {
+          console.warn(`[matchmaker] pity active but no up-only counterparty — falling back to full tier set`);
+        }
+      }
     }
 
     console.log(`[matchmaker] tier: ${TIER_LABEL[requesterTier]} — ${candidates.length} candidates`);
@@ -294,6 +349,32 @@ export class Matchmaker {
     console.log(`  requester got: ${ctpAcc.amount} of ${ctpAcc.mint.toBase58().slice(0,8)} (~$${ctpUsd?.toFixed(2)})`);
     console.log(`  counterparty got: ${reqAcc.amount} of ${reqAcc.mint.toBase58().slice(0,8)} (~$${reqUsd?.toFixed(2)})`);
     console.log(`  entropy slot: ${entropy.entropySlot}, index: ${entropy.randomIndex}/${candidates.length} (${TIER_LABEL[requesterTier]})`);
+
+    // Record the receipt trail — everything needed to re-derive the roll
+    const multiplier = reqUsd && ctpUsd && reqUsd > 0
+      ? Math.round((ctpUsd / reqUsd) * 100) / 100
+      : null;
+    this.history.record({
+      signature: sig,
+      requester: sender.toBase58(),
+      counterparty: counterparty.owner.toBase58(),
+      requesterMint: reqAcc.mint.toBase58(),
+      counterpartyMint: ctpAcc.mint.toBase58(),
+      requesterAmount: reqAcc.amount.toString(),
+      counterpartyAmount: ctpAcc.amount.toString(),
+      requesterUsd: reqUsd,
+      counterpartyUsd: ctpUsd,
+      multiplier,
+      rarity: multiplier !== null ? rarityForMult(multiplier) : null,
+      tier: TIER_LABEL[requesterTier],
+      requestSlot,
+      entropySlot: Number(entropy.entropySlot),
+      slotHash: entropy.slotHash.toString("hex"),
+      randomIndex: Number(entropy.randomIndex),
+      poolSize: Number(entropy.poolSize),
+      pityTriggered,
+      ts: Date.now(),
+    });
 
     // Distribute dividend share of roll fee to previous rollers, then register sender
     this.ledger.allocate(sender.toBase58(), Number(receivedLamports));

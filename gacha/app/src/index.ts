@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import "dotenv/config";
-import { startHealthServer, registerLedger } from "./health.js";
+import { startHealthServer, registerLedger, registerHistory, registerPool } from "./health.js";
 import { Command } from "commander";
 import { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { getAccount, getMint } from "@solana/spl-token";
@@ -52,6 +52,8 @@ program
     const connection = getConnection();
     const mm = new Matchmaker(connection, keypair);
     registerLedger(mm.getLedger());
+    registerHistory(mm.getHistory());
+    registerPool(mm.getPool());
     await mm.run();
   });
 

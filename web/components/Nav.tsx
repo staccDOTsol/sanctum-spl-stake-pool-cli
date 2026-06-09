@@ -8,6 +8,7 @@ const LINKS = [
   { href: "/",        label: "Home"    },
   { href: "/explore", label: "Explore" },
   { href: "/launch",  label: "Launch"  },
+  { href: "/gacha",   label: "⇄ Gacha" },
 ];
 
 export default function Nav() {
