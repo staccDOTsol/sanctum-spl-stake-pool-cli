@@ -1,7 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from "http";
 import { readFileSync, existsSync } from "fs";
 import { join, resolve } from "path";
-import { LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import type { DividendLedger } from "./dividend.js";
 import type { SwapHistory } from "./history.js";
 import type { GachaPool } from "./pool.js";
@@ -73,6 +73,36 @@ export function startHealthServer(): void {
     if (pathname === "/health") {
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("ok");
+      return;
+    }
+
+    // CORS preflight (for the Next-dev cross-origin case; prod is same-origin)
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      });
+      res.end();
+      return;
+    }
+
+    // Register an owner so their delegated accounts join the pool.
+    if (req.method === "POST" && pathname === "/register") {
+      if (!_pool) { json(res, 503, { error: "matchmaker not running" }); return; }
+      let body = "";
+      req.on("data", c => { body += c; if (body.length > 4096) req.destroy(); });
+      req.on("end", () => {
+        try {
+          const { owner } = JSON.parse(body || "{}") as { owner?: string };
+          if (!owner) { json(res, 400, { error: "missing owner" }); return; }
+          const pk = new PublicKey(owner); // throws on invalid
+          _pool!.refreshOwner(pk).catch(e => console.warn("[register] refresh failed:", (e as Error).message));
+          json(res, 200, { ok: true, owner: pk.toBase58(), poolOwners: _pool!.ownerCount });
+        } catch {
+          json(res, 400, { error: "invalid owner pubkey" });
+        }
+      });
       return;
     }
 

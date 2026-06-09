@@ -17,6 +17,7 @@ primary_region = "iad"
   MAX_ROLLS_PER_PAYMENT = "10"   # one payment of N× the fee buys N swaps (10-pull)
   GACHA_PITY_HARD = "90"         # consecutive losing rolls before the up-only guarantee
   GACHA_PITY_SOFT = "74"
+  DISABLE_TIER_MATCHING = "true" # pre-PMF: any delegated token can swap with any other
   # Ledgers persist on the mounted volume so the jackpot pot + dividend ledger
   # + swap history survive deploys/restarts.
   SWAP_HISTORY_PATH = "/data/swap-history.json"

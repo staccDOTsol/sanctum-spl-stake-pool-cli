@@ -12,7 +12,7 @@ import {
   THEMES, Pull, LiveStats, SwapRecord, topRarity, pullFromSwap, fetchTokenMeta, fmtSol,
 } from "@/lib/gacha/data";
 import {
-  getConfig, getSolBalance, loadHoldings, fetchPrices,
+  getConfig, getSolBalance, loadHoldings, fetchPrices, registerOwner,
   buildDelegateTxs, buildRollTx, sendRaw, type Holding,
 } from "@/lib/gacha/chain";
 import { connect as connectWallet, type ConnectedWallet } from "@/lib/gacha/wallet";
@@ -108,6 +108,7 @@ export default function GachaPage() {
       setWallet(w);
       setShowPicker(false);
       await getConfig(); // warm config (rpc, matchmaker)
+      await registerOwner(w.publicKey); // discover any existing delegations
       await refresh(w);
     } catch (e) {
       showToast((e as Error).message || "Failed to connect");
@@ -130,11 +131,25 @@ export default function GachaPage() {
         setApprovalBusy(`Sign batch ${i + 1}/${txs.length}…`);
         await wallet.signAndSend(txs[i], sendRaw);
       }
-      setApprovalBusy("Confirming…");
+      // Verify the delegation actually registered on-chain (a wallet can return
+      // a signature for a tx that then fails; confirmation also lags a few sec).
+      setApprovalBusy("Confirming on-chain…");
+      const wantAtas = new Set(selected.map(s => s.ata));
+      let delegatedNow = 0;
+      for (let i = 0; i < 6; i++) {
+        await new Promise(r => setTimeout(r, 2500));
+        const hs = await loadHoldings(wallet.publicKey).catch(() => [] as Holding[]);
+        delegatedNow = hs.filter(h => h.delegated && wantAtas.has(h.ata)).length;
+        if (delegatedNow >= selected.length) break;
+      }
       await refresh(wallet);
       setApprovalBusy(null);
       setShowApproval(false);
-      showToast(`Delegated ${selected.length} token${selected.length > 1 ? "s" : ""} — pool armed ⇄`);
+      if (delegatedNow === 0) {
+        showToast("Delegation didn't register on-chain — the transaction may have failed or been rejected. Check your wallet's activity and try again.");
+      } else {
+        showToast(`Delegated ${delegatedNow} token${delegatedNow > 1 ? "s" : ""} — pool armed ⇄`);
+      }
     } catch (e) {
       setApprovalBusy(null);
       setApprovalError((e as Error).message || "Approval failed / rejected");

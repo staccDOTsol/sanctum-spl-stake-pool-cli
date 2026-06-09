@@ -1,171 +1,127 @@
 /**
- * Pool: all SPL token accounts that have delegated to the matchmaker.
+ * Pool: all SPL token accounts delegated to the matchmaker (approve + close
+ * authority).
  *
- * Discovery strategy (auto-detected):
- *   1. Helius RPCs → getProgramAccountsV2 with pagination (required for token program)
- *   2. Other RPCs  → standard getProgramAccounts with dataSize + memcmp filters
+ * Discovery is REGISTRY-based, not a chain-wide scan. Most RPC providers
+ * (incl. our Helius plan) exclude the SPL Token program from secondary
+ * indexes, so getProgramAccounts / getTokenAccountsByDelegate over the Token
+ * program return nothing. Instead, wallets register their pubkey (POST
+ * /register, and the matchmaker auto-registers anyone who pays a roll fee),
+ * and we enumerate each owner's accounts with getTokenAccountsByOwner —
+ * which every provider supports — keeping those delegated to us.
  *
- * POOL_DISCOVERY_RPC can point to a separate endpoint (e.g. Helius) if the
- * primary RPC (e.g. Shyft) blocks getProgramAccounts.
+ * The owner registry is persisted on the mounted volume so it survives deploys.
  */
 
 import { Connection, PublicKey } from "@solana/web3.js";
-import bs58 from "bs58";
-import { AccountLayout, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 import { DelegateEntry } from "./types.js";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { dirname } from "path";
 
-interface HeliusAccount {
-  pubkey: string;
-  account: { data: [string, "base64"]; owner: string };
+const REGISTRY_PATH = process.env.REGISTRY_PATH ?? "/data/registry.json";
+
+interface ParsedInfo {
+  mint: string;
+  delegate?: string;
+  closeAuthority?: string;
+  tokenAmount: { amount: string };
 }
 
 export class GachaPool {
   private entries: DelegateEntry[] = [];
+  private owners = new Set<string>();
   private lastSync = 0;
-  private discoveryRpcUrl: string;
-  private discoveryConnection: Connection;
+  private mmStr: string;
+  private rpc: Connection;
 
   constructor(
     private connection: Connection,
     private matchmaker: PublicKey
   ) {
-    this.discoveryRpcUrl =
-      process.env.POOL_DISCOVERY_RPC ??
-      process.env.SOLANA_RPC ??
-      "https://api.mainnet-beta.solana.com";
-
-    const primaryUrl =
-      (connection as unknown as { _rpcEndpoint: string })._rpcEndpoint ??
-      process.env.SOLANA_RPC ?? "";
-
-    this.discoveryConnection =
-      this.discoveryRpcUrl === primaryUrl
-        ? connection
-        : new Connection(this.discoveryRpcUrl, "confirmed");
-
-    console.log(`[pool] discovery RPC: ${this.discoveryRpcUrl.replace(/api[-_]key=[^&]+/, "api_key=***")}`);
+    this.mmStr = matchmaker.toBase58();
+    // Reads use POOL_DISCOVERY_RPC (unrestricted) when set, else the main RPC.
+    const url = process.env.POOL_DISCOVERY_RPC;
+    this.rpc = url ? new Connection(url, "confirmed") : connection;
+    this.loadOwners();
+    console.log(`[pool] registry: ${this.owners.size} owners`);
   }
 
+  private loadOwners(): void {
+    try {
+      if (existsSync(REGISTRY_PATH)) {
+        const arr = JSON.parse(readFileSync(REGISTRY_PATH, "utf8")) as string[];
+        this.owners = new Set(arr);
+      }
+    } catch (e) { console.warn("[pool] could not load registry:", (e as Error).message); }
+  }
+
+  private saveOwners(): void {
+    try {
+      mkdirSync(dirname(REGISTRY_PATH), { recursive: true });
+      writeFileSync(REGISTRY_PATH, JSON.stringify([...this.owners]));
+    } catch (e) { console.warn("[pool] could not save registry:", (e as Error).message); }
+  }
+
+  /** Register an owner so their delegated accounts join the pool. */
+  addOwner(owner: PublicKey): boolean {
+    const k = owner.toBase58();
+    if (this.owners.has(k)) return false;
+    this.owners.add(k);
+    this.saveOwners();
+    console.log(`[pool] registered owner ${k}`);
+    return true;
+  }
+
+  /** Enumerate one owner's delegated-to-us token accounts (both token programs). */
+  private async fetchOwner(owner: PublicKey): Promise<DelegateEntry[]> {
+    const out: DelegateEntry[] = [];
+    for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+      const res = await this.rpc.getParsedTokenAccountsByOwner(owner, { programId });
+      for (const { pubkey, account } of res.value) {
+        const info = (account.data as { parsed: { info: ParsedInfo } }).parsed.info;
+        if (info.delegate !== this.mmStr || info.closeAuthority !== this.mmStr) continue;
+        const amount = BigInt(info.tokenAmount.amount);
+        if (amount === 0n) continue;
+        out.push({
+          owner,
+          ata: pubkey,
+          mint: new PublicKey(info.mint),
+          registeredAmount: amount,
+          registeredAt: Date.now(),
+          isActive: true,
+          pda: pubkey,
+        });
+      }
+    }
+    return out;
+  }
+
+  /** Full re-sync across all registered owners. */
   async sync(): Promise<void> {
-    const [v1, v2] = await Promise.all([
-      this.fetchDelegated(TOKEN_PROGRAM_ID),
-      this.fetchDelegated(TOKEN_2022_PROGRAM_ID),
-    ]);
-    this.entries = [...v1, ...v2];
+    const all: DelegateEntry[] = [];
+    for (const o of this.owners) {
+      try { all.push(...await this.fetchOwner(new PublicKey(o))); }
+      catch (e) { console.warn(`[pool] sync owner ${o.slice(0, 8)}… failed:`, (e as Error).message); }
+    }
+    this.entries = all;
     this.lastSync = Date.now();
-    console.log(`[pool] synced ${this.entries.length} delegated ATAs`);
+    console.log(`[pool] synced ${this.entries.length} delegated ATAs across ${this.owners.size} owners`);
   }
 
   async syncIfStale(): Promise<void> {
     if (Date.now() - this.lastSync > 30_000) await this.sync();
   }
 
-  private async fetchDelegated(tokenProgram: PublicKey): Promise<DelegateEntry[]> {
-    // COption<Pubkey> delegate at offset 72: [1,0,0,0, ...32 bytes...]
-    const delegateBytes = bs58.encode(
-      Buffer.concat([Buffer.from([1, 0, 0, 0]), this.matchmaker.toBuffer()])
-    );
-    const filters = [
-      { dataSize: 165 },
-      { memcmp: { offset: 72, bytes: delegateBytes } },
-    ];
-
-    // Try Helius getProgramAccountsV2 first (required for token program scale).
-    // Falls back to standard getProgramAccounts for non-Helius RPCs.
-    try {
-      return await this.fetchViaHeliusV2(tokenProgram, filters);
-    } catch (heliusErr) {
-      const msg = (heliusErr as Error).message;
-      // If the error isn't a "method not found" style error, re-throw
-      if (!msg.includes("Method not found") && !msg.includes("getProgramAccountsV2")) {
-        throw heliusErr;
-      }
-      // Non-Helius RPC — fall back to standard getProgramAccounts
-      return await this.fetchViaStandard(tokenProgram, filters);
-    }
-  }
-
-  /** Helius-specific: getProgramAccountsV2 with cursor-based pagination */
-  private async fetchViaHeliusV2(
-    tokenProgram: PublicKey,
-    filters: unknown[]
-  ): Promise<DelegateEntry[]> {
-    const results: DelegateEntry[] = [];
-    let cursor: string | undefined;
-
-    do {
-      const pagination: Record<string, unknown> = { limit: 1000 };
-      if (cursor) pagination.cursor = cursor;
-
-      const resp = await fetch(this.discoveryRpcUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "getProgramAccountsV2",
-          params: [
-            tokenProgram.toBase58(),
-            { filters, encoding: "base64", commitment: "confirmed", pagination },
-          ],
-        }),
-        signal: AbortSignal.timeout(30_000),
-      });
-
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
-      const json = await resp.json() as {
-        result?: { accounts?: HeliusAccount[]; cursor?: string };
-        error?: { code: number; message: string };
-      };
-      if (json.error) throw new Error(json.error.message);
-
-      const accounts: HeliusAccount[] = json.result?.accounts ?? [];
-      cursor = json.result?.cursor;
-
-      for (const { pubkey, account } of accounts) {
-        this.decodeAndPush(pubkey, Buffer.from(account.data[0], "base64"), results);
-      }
-    } while (cursor);
-
-    return results;
-  }
-
-  /** Standard Solana RPC: getProgramAccounts via web3.js */
-  private async fetchViaStandard(
-    tokenProgram: PublicKey,
-    filters: unknown[]
-  ): Promise<DelegateEntry[]> {
-    const accounts = await this.discoveryConnection.getProgramAccounts(tokenProgram, {
-      filters: filters as Parameters<Connection["getProgramAccounts"]>[1] extends { filters?: infer F } ? F : never,
-    });
-    const results: DelegateEntry[] = [];
-    for (const { pubkey, account } of accounts) {
-      this.decodeAndPush(pubkey.toBase58(), account.data, results);
-    }
-    return results;
-  }
-
-  private decodeAndPush(pubkeyStr: string, data: Buffer, results: DelegateEntry[]): void {
-    try {
-      const decoded = AccountLayout.decode(data);
-      if (
-        decoded.closeAuthorityOption !== 1 ||
-        !new PublicKey(decoded.closeAuthority).equals(this.matchmaker)
-      ) return;
-      if (decoded.amount === 0n) return;
-      results.push({
-        owner: new PublicKey(decoded.owner),
-        ata: new PublicKey(pubkeyStr),
-        mint: new PublicKey(decoded.mint),
-        registeredAmount: decoded.amount,
-        registeredAt: 0,
-        isActive: true,
-        pda: new PublicKey(pubkeyStr),
-      });
-    } catch { /* skip malformed */ }
+  /** Register + immediately load one owner (used on roll payment + /register). */
+  async refreshOwner(owner: PublicKey): Promise<void> {
+    this.addOwner(owner);
+    const fresh = await this.fetchOwner(owner);
+    this.entries = this.entries.filter(e => !e.owner.equals(owner)).concat(fresh);
   }
 
   get size(): number { return this.entries.length; }
+  get ownerCount(): number { return this.owners.size; }
 
   get(index: bigint): DelegateEntry | undefined {
     if (this.entries.length === 0) return undefined;

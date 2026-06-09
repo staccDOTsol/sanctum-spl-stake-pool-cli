@@ -40,6 +40,9 @@ import { classifyMint, loadTierLists, TIER_LABEL, TokenTier } from "./tiers.js";
 const MIN_ROLL_FEE = parseFloat(process.env.MIN_ROLL_FEE_SOL ?? "0.003") * LAMPORTS_PER_SOL;
 /** One payment of N× the roll fee buys N swaps (the 10-pull), capped here. */
 const MAX_ROLLS_PER_PAYMENT = parseInt(process.env.MAX_ROLLS_PER_PAYMENT ?? "10");
+/** Tier matching (blue-chip↔blue-chip etc.) — disable to bootstrap liquidity
+ *  pre-PMF so any delegated token can swap with any other. */
+const TIER_MATCHING = (process.env.DISABLE_TIER_MATCHING ?? "false").toLowerCase() !== "true";
 
 export class Matchmaker {
   private pool: GachaPool;
@@ -170,7 +173,9 @@ export class Matchmaker {
     requestSlot: number,
     receivedLamports: bigint
   ): Promise<void> {
-    await this.pool.syncIfStale();
+    // Auto-register + freshly load the payer's delegated accounts (registry-based
+    // discovery — chain-wide scans aren't available on our RPC plan).
+    await this.pool.refreshOwner(sender).catch(() => this.pool.syncIfStale());
 
     // Find sender's delegated ATAs
     const senderEntries = this.pool.getByOwner(sender);
@@ -194,20 +199,26 @@ export class Matchmaker {
     }
     const requesterTier = await classifyMint(reqAccPrelim.mint.toBase58(), this.connection);
 
-    // Filter pool to same tier — prevents cross-tier gaming
-    let candidates = await Promise.all(
-      this.pool.getAll()
-        .filter(e => !e.owner.equals(sender))
-        .map(async e => {
-          const t = await classifyMint(e.mint.toBase58(), this.connection);
-          return t === requesterTier ? e : null;
-        })
-    ).then(arr => arr.filter((e): e is NonNullable<typeof e> => e !== null));
+    // Candidate counterparties: everyone in the pool but the sender. With tier
+    // matching on, restrict to the same tier (anti-gaming); off (pre-PMF), open.
+    let candidates: ReturnType<GachaPool["getAll"]>;
+    if (TIER_MATCHING) {
+      candidates = await Promise.all(
+        this.pool.getAll()
+          .filter(e => !e.owner.equals(sender))
+          .map(async e => {
+            const t = await classifyMint(e.mint.toBase58(), this.connection);
+            return t === requesterTier ? e : null;
+          })
+      ).then(arr => arr.filter((e): e is NonNullable<typeof e> => e !== null));
+    } else {
+      candidates = this.pool.getAll().filter(e => !e.owner.equals(sender));
+    }
 
     if (candidates.length === 0) {
       console.warn(
-        `[matchmaker] no ${TIER_LABEL[requesterTier]} counterparty in pool — ` +
-        `${sender.toBase58().slice(0, 8)} must wait for another ${TIER_LABEL[requesterTier]} token holder`
+        `[matchmaker] no counterparty in pool for ${sender.toBase58().slice(0, 8)} ` +
+        `(${TIER_MATCHING ? `tier ${TIER_LABEL[requesterTier]}` : "open matching"}) — pool needs another delegated wallet`
       );
       return;
     }
@@ -242,7 +253,7 @@ export class Matchmaker {
       }
     }
 
-    console.log(`[matchmaker] tier: ${TIER_LABEL[requesterTier]} — ${candidates.length} candidates`);
+    console.log(`[matchmaker] ${TIER_MATCHING ? `tier ${TIER_LABEL[requesterTier]}` : "open matching"} — ${candidates.length} candidates`);
 
     // Provably fair counterparty selection within tier
     const entropy = await computeEntropy(

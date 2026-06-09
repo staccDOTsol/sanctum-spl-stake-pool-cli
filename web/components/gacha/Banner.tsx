@@ -86,8 +86,8 @@ export function Banner({
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
           {live && (
             <div style={{ ...pill, gap: 8, cursor: "default" }}>
-              <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#7CFFB2", boxShadow: "0 0 8px #7CFFB2", animation: "fadepulse 1.4s infinite" }} />
-              <span style={{ color: "rgba(255,255,255,0.55)" }}>pool {live.poolSize} · {live.totalSwaps} swaps</span>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: (live.poolOwners ?? 0) >= 2 ? "#7CFFB2" : "#ffcb45", boxShadow: `0 0 8px ${(live.poolOwners ?? 0) >= 2 ? "#7CFFB2" : "#ffcb45"}`, animation: "fadepulse 1.4s infinite" }} />
+              <span style={{ color: "rgba(255,255,255,0.55)" }}>{live.poolOwners ?? 0} players · {live.poolSize} tokens · {live.totalSwaps} swaps</span>
             </div>
           )}
           {connected && <button onClick={onHistory} style={pill}><span style={{ color: "rgba(255,255,255,0.55)" }}>⊞ Collection</span></button>}
@@ -235,9 +235,11 @@ export function Banner({
             <div style={{ fontSize: 12, fontFamily: "var(--mono)", color: "rgba(255,255,255,0.8)", marginTop: 3 }}>{+(rollFee * 10).toFixed(4)} ◎ roll fee</div>
           </button>
         </div>
-        {connected && delegatedCount === 0 && (
-          <div style={{ marginTop: 12, fontSize: 12, color: "rgba(255,203,69,0.8)", fontFamily: "var(--mono)", textAlign: "center" }}>
-            Delegate at least one token before you can wish.
+        {connected && (
+          <div style={{ marginTop: 12, fontSize: 12, fontFamily: "var(--mono)", textAlign: "center", color: "rgba(255,255,255,0.45)" }}>
+            Pool: <span style={{ color: (live?.poolOwners ?? 0) >= 2 ? "#7CFFB2" : "#ffcb45", fontWeight: 700 }}>{live?.poolOwners ?? 0} players</span> · {live?.poolSize ?? 0} tokens · you: <span style={{ color: delegatedCount > 0 ? "#7CFFB2" : "rgba(255,255,255,0.6)", fontWeight: 700 }}>{delegatedCount} delegated</span>
+            {delegatedCount === 0 && <><br />Delegate at least one token before you can wish.</>}
+            {delegatedCount > 0 && (live?.poolOwners ?? 0) < 2 && <><br />Pool needs a 2nd delegated wallet before a swap can resolve.</>}
           </div>
         )}
       </div>

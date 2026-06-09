@@ -150,6 +150,18 @@ export async function sendRaw(raw: Uint8Array): Promise<string> {
   return sig;
 }
 
+/** Register this wallet with the matchmaker so its delegated accounts are
+ *  discovered (registry-based discovery — see gacha/app/src/pool.ts). */
+export async function registerOwner(owner: PublicKey): Promise<void> {
+  try {
+    await fetch("/api/gacha/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner: owner.toBase58() }),
+    });
+  } catch { /* best-effort */ }
+}
+
 /**
  * USD prices for a set of mints via Jupiter Price API v3 (best-effort).
  * v3 returns { "<mint>": { usdPrice, ... } } — no `data` wrapper, `usdPrice`
