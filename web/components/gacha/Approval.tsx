@@ -22,10 +22,13 @@ export function ApprovalSheet({ holdings, threshold, setThreshold, busy, error, 
   onApprove: (selected: PricedHolding[]) => void;
   onClose: () => void;
 }) {
-  // default selection: undelegated tokens priced under the threshold (or unpriced)
+  // default selection: undelegated tokens priced under the threshold.
+  // Unpriced tokens are NOT selectable — the matchmaker never switches a token
+  // it can't price, so delegating one would be dead weight.
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
-  const inDefault = (h: PricedHolding) => !h.delegated && (h.usd === null || h.usd < threshold);
-  const isSelected = (h: PricedHolding) => overrides[h.ata] ?? inDefault(h);
+  const selectable = (h: PricedHolding) => !h.delegated && h.usd !== null;
+  const inDefault = (h: PricedHolding) => selectable(h) && (h.usd as number) < threshold;
+  const isSelected = (h: PricedHolding) => selectable(h) && (overrides[h.ata] ?? inDefault(h));
   const selected = useMemo(() => holdings.filter(isSelected), [holdings, overrides, threshold]);
   const sweptUsd = selected.reduce((s, h) => s + (h.usd ?? 0), 0);
 
@@ -71,14 +74,17 @@ export function ApprovalSheet({ holdings, threshold, setThreshold, busy, error, 
           )}
           {holdings.map(h => {
             const sel = isSelected(h);
+            const noPrice = h.usd === null;
             return (
-              <button key={h.ata} disabled={h.delegated || !!busy}
+              <button key={h.ata} disabled={h.delegated || noPrice || !!busy}
+                title={noPrice ? "No Jupiter price — unpriceable tokens are never switched" : undefined}
                 onClick={() => setOverrides(o => ({ ...o, [h.ata]: !sel }))}
                 style={{
                   width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "9px 10px", borderRadius: 10,
                   background: sel ? "rgba(176,107,255,0.1)" : "transparent",
                   border: "none", borderBottom: "1px solid rgba(255,255,255,0.04)",
-                  opacity: h.delegated ? 0.5 : 1, cursor: h.delegated || busy ? "default" : "pointer", textAlign: "left",
+                  opacity: h.delegated || noPrice ? 0.45 : 1,
+                  cursor: h.delegated || noPrice || busy ? "default" : "pointer", textAlign: "left",
                 }}>
                 <div style={{
                   width: 30, height: 30, borderRadius: "50%", flex: "none",
@@ -92,8 +98,8 @@ export function ApprovalSheet({ holdings, threshold, setThreshold, busy, error, 
                 </div>
                 <div style={{ fontFamily: "var(--mono)", fontSize: 13, color: "#fff" }}>{h.usd === null ? "—" : fmtUsd(Math.round(h.usd))}</div>
                 <div style={{ width: 72, textAlign: "right", fontFamily: "var(--mono)", fontSize: 10, fontWeight: 800, letterSpacing: "0.06em",
-                  color: h.delegated ? "#7CFFB2" : sel ? "#b06bff" : "rgba(255,255,255,0.3)" }}>
-                  {h.delegated ? "✓ IN POOL" : sel ? "SELECTED" : "SKIP"}
+                  color: h.delegated ? "#7CFFB2" : noPrice ? "#ff8aa6" : sel ? "#b06bff" : "rgba(255,255,255,0.3)" }}>
+                  {h.delegated ? "✓ IN POOL" : noPrice ? "NO PRICE" : sel ? "SELECTED" : "SKIP"}
                 </div>
               </button>
             );

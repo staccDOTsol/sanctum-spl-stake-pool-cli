@@ -200,6 +200,8 @@ export class Matchmaker {
     let requester: typeof senderEntries[number] | null = null;
     let reqValue: number | null = null;
     let candidates: ReturnType<GachaPool["getAll"]> = [];
+    // HARD RULE: a token we cannot price is never switched — in either direction.
+    // No price → no value band → no provably-fair-but-worthless drain vector.
     const pricedSenderBags = senderEntries
       .filter(e => valueOf(e) != null)
       .sort((a, b) => (valueOf(b) ?? 0) - (valueOf(a) ?? 0));
@@ -212,15 +214,9 @@ export class Matchmaker {
       if (cands.length > 0) { requester = e; reqValue = v; candidates = cands; break; }
     }
     if (!requester) {
-      // fallback: unpriceable bag ↔ unpriceable counterparties
-      const unp = senderEntries.find(e => valueOf(e) == null);
-      const unpCands = poolMinusSelf.filter(c => valueOf(c) == null);
-      if (unp && unpCands.length > 0) { requester = unp; reqValue = null; candidates = unpCands; }
-    }
-    if (!requester) {
       console.warn(
         `[matchmaker] no value-matched counterparty for ${sender.toBase58().slice(0, 8)} ` +
-        `across ${senderEntries.length} bags (within ${VALUE_BAND}×) — waiting for a similar-value bag`
+        `across ${pricedSenderBags.length} priced bags (within ${VALUE_BAND}×; unpriceable bags are never switched)`
       );
       return;
     }
