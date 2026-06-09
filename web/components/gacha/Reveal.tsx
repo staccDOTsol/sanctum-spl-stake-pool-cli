@@ -143,17 +143,19 @@ export function RevealCard({ pull, intensity, big, onReceipt }: {
           <span style={{ color: pull.isWin ? "#7CFFB2" : "#ff6b6b", fontWeight: 700 }}>{fmtUsd(pull.toUsd)}</span>
         </div>
 
-        {/* early dividend chip */}
-        <div style={{
-          marginTop: 16, display: "inline-flex", alignItems: "center", gap: 8,
-          padding: "7px 14px", borderRadius: 999,
-          background: "rgba(255,203,69,0.1)", border: "1px solid rgba(255,203,69,0.3)",
-          fontFamily: "var(--mono)", fontSize: 13,
-        }}>
-          <span style={{ color: "#ffcb45", fontWeight: 800 }}>+{fmtPts(pull.earlyPts)} $EARLY</span>
-          <span style={{ color: "rgba(255,255,255,0.35)" }}>·</span>
-          <span style={{ color: "#7CFFB2" }}>+{fmtUsd(pull.dividend)} dividend</span>
-        </div>
+        {/* early dividend chip (only when the roll carried points/dividend) */}
+        {(pull.earlyPts > 0 || pull.dividend > 0) && (
+          <div style={{
+            marginTop: 16, display: "inline-flex", alignItems: "center", gap: 8,
+            padding: "7px 14px", borderRadius: 999,
+            background: "rgba(255,203,69,0.1)", border: "1px solid rgba(255,203,69,0.3)",
+            fontFamily: "var(--mono)", fontSize: 13,
+          }}>
+            <span style={{ color: "#ffcb45", fontWeight: 800 }}>+{fmtPts(pull.earlyPts)} $EARLY</span>
+            <span style={{ color: "rgba(255,255,255,0.35)" }}>·</span>
+            <span style={{ color: "#7CFFB2" }}>+{fmtUsd(pull.dividend)} dividend</span>
+          </div>
+        )}
 
         <button onClick={onReceipt} style={{
           display: "block", margin: "18px auto 0", padding: "6px 12px",

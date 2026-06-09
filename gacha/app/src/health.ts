@@ -90,6 +90,8 @@ export function startHealthServer(): void {
         jackpotSol: jp?.balanceSol ?? 0,
         jackpotOddsPerTicket: jp?.oddsPerTicket ?? 0,
         matchmaker: process.env.MATCHMAKER_PUBKEY ?? null,
+        // Public RPC for the browser dApp (token reads + tx broadcast).
+        rpc: process.env.FRONTEND_RPC ?? "https://api.mainnet-beta.solana.com",
       });
       return;
     }

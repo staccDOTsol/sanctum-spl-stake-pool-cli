@@ -101,65 +101,9 @@ export const POOL: Record<RarityKey, GachaToken[]> = {
   ],
 };
 
-export interface Holding extends GachaToken {
-  usd: number;
-  amt: string;
-}
-
-// What you STAKED (tossed into the pool). The thing being risked.
-export const STAKE: Holding = { tk: "WIF", name: "dogwifhat", mono: "W", c: "#c389ff", usd: 1240, amt: "412.6" };
-
-// Your wallet holdings — the "one fell swoop" approval sweeps everything
-// below a value threshold X into the pool with a single delegation.
-export const HOLDINGS: Holding[] = [
-  { tk: "WIF", name: "dogwifhat", mono: "W", c: "#c389ff", usd: 1240, amt: "412.6" },
-  { tk: "BONK", name: "Bonk", mono: "B", c: "#f7a13b", usd: 318, amt: "14.2M" },
-  { tk: "MUMU", name: "Mumu the Bull", mono: "M", c: "#8a96ad", usd: 92, amt: "1.1M" },
-  { tk: "POPCAT", name: "Popcat", mono: "P", c: "#bd7bff", usd: 540, amt: "880" },
-  { tk: "USELESS", name: "Useless Coin", mono: "Ø", c: "#6b7587", usd: 27, amt: "60k" },
-  { tk: "PNUT", name: "Peanut", mono: "P", c: "#39c9d4", usd: 156, amt: "420" },
-  { tk: "CHILLGUY", name: "Just a Chill Guy", mono: "🙂", c: "#7d8aa0", usd: 14, amt: "9.8k" },
-  { tk: "GIGA", name: "Gigachad", mono: "G", c: "#a865ff", usd: 2100, amt: "51k" },
-  { tk: "MOODENG", name: "Moo Deng", mono: "🦛", c: "#52dde7", usd: 73, amt: "2.4k" },
-  { tk: "FARTCOIN", name: "Fartcoin", mono: "F", c: "#cf9bff", usd: 6800, amt: "9.2k" },
-  { tk: "DADDY", name: "Daddy Tate", mono: "D", c: "#94a0b8", usd: 41, amt: "120k" },
-  { tk: "HARRYBOLZ", name: "Harry Bolz", mono: "H", c: "#7e8ba3", usd: 8, amt: "330k" },
-];
-
-// Which holdings get swept in by a threshold (everything with value < X).
-export function sweepByThreshold(x: number): Holding[] {
-  return HOLDINGS.filter(h => h.usd < x);
-}
-
-// ─── Roll math ───────────────────────────────────────────────────────────────
-export const PITY_HARD = 90; // guaranteed legendary+ at this count
-export const PITY_SOFT = 74; // odds ramp after this
-
-export function rand(a: number, b: number): number { return a + Math.random() * (b - a); }
-export function pick<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]; }
-
-// Roll a rarity given current pity. Returns rarity key.
-export function rollRarity(pity: number): RarityKey {
-  // Hard pity → guaranteed legendary (or jackpot sliver)
-  if (pity >= PITY_HARD - 1) {
-    return Math.random() < 0.05 ? "jackpot" : "legendary";
-  }
-  // Soft pity ramp: boost legendary odds after 74
-  let legBoost = 0;
-  if (pity >= PITY_SOFT) legBoost = (pity - PITY_SOFT) * 0.06;
-
-  const r = Math.random();
-  const jp = RARITIES.jackpot.odds;
-  const leg = RARITIES.legendary.odds + legBoost;
-  const epic = RARITIES.epic.odds;
-  const rare = RARITIES.rare.odds;
-
-  if (r < jp) return "jackpot";
-  if (r < jp + leg) return "legendary";
-  if (r < jp + leg + epic) return "epic";
-  if (r < jp + leg + epic + rare) return "rare";
-  return "common";
-}
+// Pity thresholds (mirror gacha/app/src/history.ts; display only here).
+export const PITY_HARD = 90; // up-only guaranteed at this many consecutive losses
+export const PITY_SOFT = 74; // soft-pity tell
 
 export interface Pull {
   id: number;
@@ -177,71 +121,6 @@ export interface Pull {
   dividend: number;
   globalRollIndex: number;
   ts: number;
-}
-
-// Build a full pull result object.
-let _pullId = 0;
-export function makePull(pity: number, stakeUsd: number, globalRollIndex: number): Pull {
-  const earlyPts = earlyPointsFor(globalRollIndex);
-  const rarityKey = rollRarity(pity);
-  const R = RARITIES[rarityKey];
-  const token = pick(POOL[rarityKey]);
-  const [lo, hi] = R.multRange;
-  // bias multiplier toward the low end so big numbers feel earned
-  const t = Math.pow(Math.random(), 1.7);
-  let mult = lo + t * (hi - lo);
-  mult = rarityKey === "jackpot" ? Math.round(mult) : Math.round(mult * 100) / 100;
-  const newUsd = Math.round(stakeUsd * mult);
-  // edge dividend: the swap's notional churn pays a kickback to earlier rollers
-  // (and future rollers pay you). Scaled off the larger of stake/winnings so it
-  // never rounds to nothing.
-  const dividend = Math.max(1, Math.round(Math.max(stakeUsd, newUsd) * 0.012 * (0.6 + Math.random())));
-  return {
-    id: ++_pullId,
-    rarity: rarityKey,
-    token,
-    mult,
-    fromUsd: stakeUsd,
-    toUsd: newUsd,
-    isWin: mult >= 1,
-    slotHash: randomSlotHash(),
-    requestSlot: 287_000_000 + Math.floor(Math.random() * 900_000),
-    poolSize: 1200 + Math.floor(Math.random() * 800),
-    selectedIndex: Math.floor(Math.random() * 1900),
-    earlyPts,
-    dividend,
-    globalRollIndex,
-    ts: Date.now(),
-  };
-}
-
-// ─── EARLY ROLLER DIVIDENDS ───────────────────────────────────────────────────
-// The "house edge" is NOT skimmed — it's paid forward. Every roll mints $EARLY
-// points, exponentially more the earlier you are in the protocol's life. Each
-// roll's edge also pays a dividend to a previous roller. Play early, play often.
-export const PROTOCOL_GENESIS_ROLLS = 142069; // global rolls already minted at launch sim
-export const EARLY_BASE = 10000;              // points for roll #1
-export const EARLY_HALFLIFE = 50000;          // rolls until mint-rate halves
-
-// Points minted for the Nth global roll (1-indexed). Exponential decay → early = huge.
-export function earlyPointsFor(globalRollIndex: number): number {
-  const decay = Math.pow(0.5, globalRollIndex / EARLY_HALFLIFE);
-  return Math.max(12, Math.round(EARLY_BASE * decay));
-}
-
-// What fraction of all-time mint is still ahead of you (your "earliness percentile").
-export function earlinessPct(globalRollIndex: number): number {
-  const k = Math.LN2 / EARLY_HALFLIFE;
-  const total = EARLY_BASE / k; // ∫0..∞
-  const remaining = (EARLY_BASE / k) * Math.exp(-k * globalRollIndex);
-  return Math.max(0.1, Math.min(99.9, (remaining / total) * 100));
-}
-
-export function randomSlotHash(): string {
-  const hex = "0123456789abcdef";
-  let s = "";
-  for (let i = 0; i < 64; i++) s += hex[Math.floor(Math.random() * 16)];
-  return s;
 }
 
 // Highest rarity in a batch (for 10-pull star tell + summary celebration)
@@ -278,24 +157,10 @@ export function fmtSol(n: number): string {
   return n.toFixed(4) + " ◎";
 }
 
-// ─── Progressive jackpot (positive-skew dream tail) ─────────────────────────
-// Mirrors gacha/app/src/jackpot.ts: a rake of each roll fee accrues into a pot
-// paid on a rare provably-fair trigger; a win streak buys extra tickets.
-export const JACKPOT_SEED_SOL = 4.2069;
-export const JACKPOT_RAKE = 0.05;        // 5% of the roll fee
-export const JACKPOT_ODDS = 1000;        // 1 in 1000 per ticket
+// Win-streak → jackpot tickets (mirrors gacha/app: 1 + min(streak, cap)).
 export const MAX_STREAK_TICKETS = 10;
-
-// Tickets the next roll draws: 1 base + 1 per win past the first, capped.
 export function ticketsForStreak(streak: number): number {
   return 1 + Math.min(streak, MAX_STREAK_TICKETS);
-}
-
-// Provably-fair-style sim hit: re-derive an independent draw from the slot hash.
-export function jackpotHit(slotHash: string, tickets: number): boolean {
-  // disjoint byte range + domain tag, mirroring the crank's derivation
-  const draw = parseInt(slotHash.slice(16, 24), 16) % JACKPOT_ODDS;
-  return draw < Math.max(1, tickets);
 }
 
 // ─── Themes ──────────────────────────────────────────────────────────────────
@@ -323,7 +188,89 @@ export function shade(hex: string, amt: number): string {
   return "#" + c(r) + c(g) + c(b);
 }
 
-// ─── Live matchmaker stats (optional overlay over the sim) ──────────────────
+// ─── Real swap records (from the matchmaker /swaps endpoint) ────────────────
+export interface SwapRecord {
+  signature: string;
+  requester: string;
+  counterparty: string;
+  requesterMint: string;
+  counterpartyMint: string;
+  requesterUsd: number | null;
+  counterpartyUsd: number | null;
+  multiplier: number | null;
+  rarity: RarityKey | null;
+  tier: string;
+  requestSlot: number;
+  entropySlot: number;
+  slotHash: string;
+  randomIndex: number;
+  poolSize: number;
+  pityTriggered: boolean;
+  streak: number;
+  jackpotTickets: number;
+  jackpotWonLamports: number;
+  ts: number;
+}
+
+// Map a real USD multiplier onto the rarity bands (matches gacha/app history.ts).
+export function rarityForMult(mult: number): RarityKey {
+  if (mult >= 800) return "jackpot";
+  if (mult >= 50) return "legendary";
+  if (mult >= 5) return "epic";
+  if (mult >= 1.5) return "rare";
+  return "common";
+}
+
+// Deterministic color + glyph for a real mint (no fake roster).
+function colorForMint(mint: string): string {
+  let h = 0;
+  for (let i = 0; i < mint.length; i++) h = (h * 31 + mint.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360}, 70%, 62%)`;
+}
+
+export function tokenFromMint(mint: string, meta?: { symbol?: string; name?: string }): GachaToken {
+  const sym = meta?.symbol || (mint.slice(0, 4) + "…");
+  return {
+    tk: sym.toUpperCase(),
+    name: meta?.name || sym,
+    mono: (meta?.symbol?.[0] || mint[0] || "?").toUpperCase(),
+    c: colorForMint(mint),
+  };
+}
+
+// Convert a real swap record into the Pull shape the reveal UI renders.
+export function pullFromSwap(rec: SwapRecord, meta?: { symbol?: string; name?: string }): Pull {
+  const mult = rec.multiplier ?? 1;
+  return {
+    id: rec.entropySlot * 1000 + rec.randomIndex,
+    rarity: rec.rarity ?? rarityForMult(mult),
+    token: tokenFromMint(rec.counterpartyMint, meta),
+    mult,
+    fromUsd: rec.requesterUsd ?? 0,
+    toUsd: rec.counterpartyUsd ?? 0,
+    isWin: mult >= 1,
+    slotHash: rec.slotHash,
+    requestSlot: rec.requestSlot,
+    poolSize: rec.poolSize,
+    selectedIndex: rec.randomIndex,
+    earlyPts: 0,
+    dividend: 0,
+    globalRollIndex: 0,
+    ts: rec.ts,
+  };
+}
+
+// Fetch token symbol/name for a mint (Jupiter token API). Best-effort.
+export async function fetchTokenMeta(mint: string): Promise<{ symbol?: string; name?: string }> {
+  try {
+    const r = await fetch(`https://lite-api.jup.ag/tokens/v1/token/${mint}`, { cache: "force-cache" });
+    if (!r.ok) return {};
+    const j = await r.json();
+    return { symbol: j.symbol, name: j.name };
+  } catch { return {}; }
+}
+
+// ─── Live matchmaker stats ──────────────────────────────────────────────────
 export interface LiveStats {
   poolSize: number;
   totalSwaps: number;
@@ -336,4 +283,5 @@ export interface LiveStats {
   jackpotSol: number;
   jackpotOddsPerTicket: number;
   matchmaker: string | null;
+  rpc?: string;
 }

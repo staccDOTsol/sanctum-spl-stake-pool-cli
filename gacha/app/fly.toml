@@ -9,6 +9,8 @@ primary_region = "iad"
   SOLANA_RPC = "https://rpc.shyft.to?api_key=vK9_JUsPkMTJY6fE"
   # Separate endpoint for getTokenAccountsByDelegate — Shyft blocks this method
   POOL_DISCOVERY_RPC = "https://mainnet.helius-rpc.com/?api-key=174bd3e2-d17b-492f-902b-710feb5d18bc"
+  # Public RPC handed to the browser dApp for token reads + tx broadcast
+  FRONTEND_RPC = "https://mainnet.helius-rpc.com/?api-key=174bd3e2-d17b-492f-902b-710feb5d18bc"
   # Gacha mechanics
   MIN_ROLL_FEE_SOL = "0.003"
   MAX_ROLLS_PER_PAYMENT = "10"   # one payment of N× the fee buys N swaps (10-pull)

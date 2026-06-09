@@ -1,150 +1,197 @@
 "use client";
 
-// THE SWITCHEROO — main state machine tying together banner, approval,
-// wish animation, reveal, summary, history and receipt.
-//
-// The pull experience is simulated client-side (the design intent: gacha fun,
-// crypto minimal). Live matchmaker stats from /api/gacha/stats overlay the sim
-// when the crank is reachable.
+// THE SWITCHEROO — real, mainnet-only dApp. No simulation.
+// Connect a wallet (any Wallet Standard wallet), delegate real SPL tokens to the
+// matchmaker (approve + close authority), pay a real roll fee, and the offchain
+// matchmaker executes the swap. The reveal renders the matchmaker's actual
+// recorded result + provably-fair receipt (polled from /api/gacha/swaps/:pubkey).
 
-import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { PublicKey } from "@solana/web3.js";
 import {
-  THEMES, STAKE, PROTOCOL_GENESIS_ROLLS, Pull, LiveStats,
-  JACKPOT_SEED_SOL, JACKPOT_RAKE,
-  sweepByThreshold, makePull, topRarity, earlinessPct,
-  ticketsForStreak, jackpotHit, fmtSol,
+  THEMES, Pull, LiveStats, SwapRecord, topRarity, pullFromSwap, fetchTokenMeta, fmtSol,
 } from "@/lib/gacha/data";
+import {
+  getConfig, getSolBalance, loadHoldings, fetchPrices,
+  buildDelegateTxs, buildRollTx, sendRaw, type Holding,
+} from "@/lib/gacha/chain";
+import { connect as connectWallet, type ConnectedWallet } from "@/lib/gacha/wallet";
 import { Starfield, useScreenShake } from "@/components/gacha/Fx";
 import { WishOverlay, RevealCard } from "@/components/gacha/Reveal";
 import { SummaryGrid, Receipt, HistoryDrawer } from "@/components/gacha/Extras";
-import { ApprovalSheet } from "@/components/gacha/Approval";
-import { Banner } from "@/components/gacha/Banner";
+import { ApprovalSheet, type PricedHolding } from "@/components/gacha/Approval";
+import { Banner, type PointsInfo } from "@/components/gacha/Banner";
+import { WalletPicker } from "@/components/gacha/WalletPicker";
 
-// Baked-in look & feel (the design's shipped tweak defaults)
 const THEME = THEMES.astral;
 const INTENSITY = 80;
-const SCREEN_SHAKE = true;
-const FAST_MODE = false;
-
-type Stage = "banner" | "wishing" | "reveal" | "summary";
+type Stage = "banner" | "resolving" | "wishing" | "reveal" | "summary";
 
 export default function GachaPage() {
-  // FX components randomize at render time — render client-side only.
   const [mounted, setMounted] = useState(false);
+  const [wallet, setWallet] = useState<ConnectedWallet | null>(null);
+  const [showPicker, setShowPicker] = useState(false);
+
+  const [balance, setBalance] = useState(0);
+  const [holdings, setHoldings] = useState<PricedHolding[]>([]);
+  const [live, setLive] = useState<LiveStats | null>(null);
+  const [points, setPoints] = useState<PointsInfo | null>(null);
+  const [pity, setPity] = useState(0);
+  const [streak, setStreak] = useState(0);
+  const [jackpotSol, setJackpotSol] = useState(0);
 
   const [stage, setStage] = useState<Stage>("banner");
-  const [approved, setApproved] = useState(false);
   const [showApproval, setShowApproval] = useState(false);
   const [threshold, setThreshold] = useState(150);
-
-  const [pity, setPity] = useState(37);
-  const [globalRolls, setGlobalRolls] = useState(PROTOCOL_GENESIS_ROLLS);
-  const [earlyBank, setEarlyBank] = useState(0);
-  const [divBank, setDivBank] = useState(0);
-  const [streak, setStreak] = useState(0);
-  const [jackpotSol, setJackpotSol] = useState(JACKPOT_SEED_SOL);
-  const [jackpotWin, setJackpotWin] = useState(0);
-  const [history, setHistory] = useState<Pull[]>([]);
+  const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [rollBusy, setRollBusy] = useState<string | null>(null);
 
   const [pulls, setPulls] = useState<Pull[]>([]);
   const [isMulti, setIsMulti] = useState(false);
   const [receipt, setReceipt] = useState<Pull | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState<Pull[]>([]);
+  const [jackpotWin, setJackpotWin] = useState(0);
+  const [toast, setToast] = useState<string | null>(null);
   const [shaking, shake] = useScreenShake();
-  const [live, setLive] = useState<LiveStats | null>(null);
+  const resolvingNote = useRef("Resolving slot hash…");
 
-  // Hydrate persisted state + hide the global scanline overlay while mounted
+  useEffect(() => { setMounted(true); document.body.classList.add("gacha-mode"); return () => document.body.classList.remove("gacha-mode"); }, []);
+
+  // live stats poll (pool size, jackpot, fee)
   useEffect(() => {
-    setPity(+(localStorage.getItem("sw_pity") || 37));
-    setGlobalRolls(+(localStorage.getItem("sw_global") || PROTOCOL_GENESIS_ROLLS));
-    setEarlyBank(+(localStorage.getItem("sw_early") || 0));
-    setDivBank(+(localStorage.getItem("sw_div") || 0));
-    setStreak(+(localStorage.getItem("sw_streak") || 0));
-    setJackpotSol(+(localStorage.getItem("sw_jackpot") || JACKPOT_SEED_SOL));
-    try { setHistory(JSON.parse(localStorage.getItem("sw_hist") || "[]")); } catch { /* keep [] */ }
-    setMounted(true);
-    document.body.classList.add("gacha-mode");
-    return () => document.body.classList.remove("gacha-mode");
+    let off = false;
+    const load = () => fetch("/api/gacha/stats").then(r => r.ok ? r.json() : null)
+      .then(s => { if (!off && s && typeof s.poolSize === "number") { setLive(s); setJackpotSol(s.jackpotSol || 0); } })
+      .catch(() => {});
+    load(); const id = setInterval(load, 20_000); return () => { off = true; clearInterval(id); };
   }, []);
 
-  useEffect(() => { if (mounted) localStorage.setItem("sw_pity", String(pity)); }, [pity, mounted]);
-  useEffect(() => { if (mounted) localStorage.setItem("sw_global", String(globalRolls)); }, [globalRolls, mounted]);
-  useEffect(() => { if (mounted) localStorage.setItem("sw_early", String(earlyBank)); }, [earlyBank, mounted]);
-  useEffect(() => { if (mounted) localStorage.setItem("sw_div", String(divBank)); }, [divBank, mounted]);
-  useEffect(() => { if (mounted) localStorage.setItem("sw_streak", String(streak)); }, [streak, mounted]);
-  useEffect(() => { if (mounted) localStorage.setItem("sw_jackpot", String(jackpotSol)); }, [jackpotSol, mounted]);
-  useEffect(() => { if (mounted) localStorage.setItem("sw_hist", JSON.stringify(history.slice(0, 60))); }, [history, mounted]);
+  const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(null), 6000); };
 
-  // Live matchmaker stats (graceful: stays null when the crank is unreachable)
-  useEffect(() => {
-    let cancelled = false;
-    const load = () =>
-      fetch("/api/gacha/stats")
-        .then(r => (r.ok ? r.json() : null))
-        .then(s => { if (!cancelled && s && typeof s.poolSize === "number") setLive(s as LiveStats); })
-        .catch(() => { /* sim-only mode */ });
-    load();
-    const id = setInterval(load, 30_000);
-    return () => { cancelled = true; clearInterval(id); };
+  // Pull together everything that depends on the connected wallet.
+  const refresh = useCallback(async (w: ConnectedWallet) => {
+    const pk = w.publicKey;
+    const [bal, hs] = await Promise.all([
+      getSolBalance(pk).catch(() => 0),
+      loadHoldings(pk).catch(() => [] as Holding[]),
+    ]);
+    setBalance(bal);
+    const prices = await fetchPrices(hs.map(h => h.mint));
+    const priced: PricedHolding[] = await Promise.all(hs.map(async h => {
+      const price = prices.get(h.mint) ?? null;
+      const meta = await fetchTokenMeta(h.mint);
+      return { ...h, symbol: meta.symbol || (h.mint.slice(0, 4) + "…"), usd: price !== null ? price * h.uiAmount : null };
+    }));
+    setHoldings(priced);
+
+    const base = w.publicKey.toBase58();
+    fetch(`/api/gacha/pity/${base}`).then(r => r.ok ? r.json() : null).then(p => {
+      if (p) { setPity(p.pity ?? 0); setStreak(p.streak ?? 0); }
+    }).catch(() => {});
+    fetch(`/api/gacha/points/${base}`).then(r => r.ok ? r.json() : null).then(p => {
+      if (p && p.pubkey) setPoints({
+        rollNumber: p.rollNumber, totalRollers: p.totalRolls ? Math.max(p.rollNumber, 1) : p.rollNumber,
+        cumulativePoints: p.cumulativePoints, totalEarnedSol: parseFloat(p.totalEarnedSOL || "0"), pendingSol: parseFloat(p.pendingSOL || "0"),
+      });
+    }).catch(() => {});
+    fetch(`/api/gacha/swaps/${base}`).then(r => r.ok ? r.json() : null).then(async d => {
+      if (d?.swaps) setHistory(await mapPulls(d.swaps));
+    }).catch(() => {});
   }, []);
 
-  const sweptUsd = sweepByThreshold(threshold).reduce((s, h) => s + h.usd, 0) || STAKE.usd;
-  const earliness = earlinessPct(globalRolls - PROTOCOL_GENESIS_ROLLS + 1);
-
-  const doRoll = useCallback((count: number) => {
-    if (!approved) { setShowApproval(true); return; }
-    let p = pity;
-    const results: Pull[] = [];
-    for (let i = 0; i < count; i++) {
-      const swept = sweepByThreshold(threshold);
-      const stakeUsd = swept[i % Math.max(1, swept.length)]?.usd || STAKE.usd;
-      const pull = makePull(p, stakeUsd, globalRolls + i + 1);
-      if (pull.rarity === "legendary" || pull.rarity === "jackpot") p = 0; else p += 1;
-      results.push(pull);
+  const doConnect = useCallback(async (name: string) => {
+    try {
+      const w = await connectWallet(name);
+      setWallet(w);
+      setShowPicker(false);
+      await getConfig(); // warm config (rpc, matchmaker)
+      await refresh(w);
+    } catch (e) {
+      showToast((e as Error).message || "Failed to connect");
     }
-    setPity(p);
-    setGlobalRolls(g => g + count);
-    setPulls(results);
-    setIsMulti(count > 1);
-    setStage("wishing");
-  }, [approved, pity, threshold, globalRolls]);
+  }, [refresh]);
+
+  const delegatedCount = holdings.filter(h => h.delegated).length;
+  const delegatedUsd = (() => {
+    const d = holdings.filter(h => h.delegated);
+    if (d.length === 0 || d.some(h => h.usd === null)) return null;
+    return Math.round(d.reduce((s, h) => s + (h.usd ?? 0), 0));
+  })();
+
+  const onApprove = useCallback(async (selected: PricedHolding[]) => {
+    if (!wallet) return;
+    setApprovalError(null);
+    try {
+      const txs = await buildDelegateTxs(wallet.publicKey, selected);
+      for (let i = 0; i < txs.length; i++) {
+        setApprovalBusy(`Sign batch ${i + 1}/${txs.length}…`);
+        await wallet.signAndSend(txs[i], sendRaw);
+      }
+      setApprovalBusy("Confirming…");
+      await refresh(wallet);
+      setApprovalBusy(null);
+      setShowApproval(false);
+      showToast(`Delegated ${selected.length} token${selected.length > 1 ? "s" : ""} — pool armed ⇄`);
+    } catch (e) {
+      setApprovalBusy(null);
+      setApprovalError((e as Error).message || "Approval failed / rejected");
+    }
+  }, [wallet, refresh]);
+
+  const doRoll = useCallback(async (count: number) => {
+    if (!wallet) { setShowPicker(true); return; }
+    if (delegatedCount === 0) { setShowApproval(true); return; }
+    const base = wallet.publicKey.toBase58();
+    try {
+      setRollBusy("Sign roll…");
+      // baseline: which of my swaps already exist
+      const before = await fetch(`/api/gacha/swaps/${base}`).then(r => r.ok ? r.json() : { swaps: [] }).catch(() => ({ swaps: [] }));
+      const seen = new Set<string>((before.swaps ?? []).map((s: SwapRecord) => s.signature));
+
+      const tx = await buildRollTx(wallet.publicKey, count);
+      await wallet.signAndSend(tx, sendRaw);
+
+      setRollBusy(null);
+      setIsMulti(count > 1);
+      resolvingNote.current = "Matchmaker resolving slot hash…";
+      setStage("resolving");
+
+      // poll for the matchmaker's executed swap(s)
+      const fresh = await pollForSwaps(base, seen, count, 60_000);
+      if (fresh.length === 0) {
+        setStage("banner");
+        showToast("No same-tier counterparty in the pool yet — your fee funded the jackpot + dividends. Try again as the pool fills.");
+        refresh(wallet);
+        return;
+      }
+      const newPulls = await mapPulls(fresh);
+      setPulls(newPulls);
+      const won = fresh.reduce((s, r) => s + (r.jackpotWonLamports || 0), 0);
+      setStage("wishing");
+      // banks/pity refresh in background
+      refresh(wallet);
+      if (won > 0) { setJackpotWin(won / 1e9); }
+    } catch (e) {
+      setRollBusy(null);
+      setStage("banner");
+      showToast((e as Error).message || "Roll failed / rejected");
+    }
+  }, [wallet, delegatedCount, refresh]);
 
   const onWishDone = useCallback(() => {
     const top = topRarity(pulls);
-    if (SCREEN_SHAKE && (top === "legendary" || top === "jackpot")) {
-      shake(top === "jackpot" ? 2 : 1);
-    }
-    setEarlyBank(b => b + pulls.reduce((s, p) => s + p.earlyPts, 0));
-    setDivBank(b => b + pulls.reduce((s, p) => s + p.dividend, 0));
-
-    // Streak parlay + progressive jackpot, sequential over the batch.
-    // Each roll rakes a slice of the fee into the pot; a win streak buys extra
-    // tickets; a provably-fair draw off the slot hash can take the whole pot.
-    const rollFee = live?.minRollFeeSol ?? 0.003;
-    let s = streak, pot = jackpotSol, won = 0;
-    for (const p of pulls) {
-      pot += rollFee * JACKPOT_RAKE;
-      const tickets = ticketsForStreak(s);
-      if (jackpotHit(p.slotHash, tickets)) { won = pot; pot = JACKPOT_SEED_SOL; }
-      s = p.isWin ? s + 1 : 0;
-    }
-    setStreak(s);
-    setJackpotSol(pot);
-    if (won > 0) { setJackpotWin(won); if (SCREEN_SHAKE) shake(2); }
-
-    setHistory(h => [...pulls].reverse().concat(h));
+    if (top === "legendary" || top === "jackpot") shake(top === "jackpot" ? 2 : 1);
+    if (jackpotWin > 0) shake(2);
     setStage(isMulti ? "summary" : "reveal");
-  }, [pulls, isMulti, shake, streak, jackpotSol, live]);
+  }, [pulls, isMulti, shake, jackpotWin]);
 
   const reset = () => { setStage("banner"); setPulls([]); };
 
-  const shakeStyle: CSSProperties = shaking
-    ? { animation: `shake${shaking > 1 ? "Big" : ""} .55s cubic-bezier(.36,.07,.19,.97)` }
-    : {};
+  const shakeStyle: CSSProperties = shaking ? { animation: `shake${shaking > 1 ? "Big" : ""} .55s cubic-bezier(.36,.07,.19,.97)` } : {};
 
-  if (!mounted) {
-    return <div className="gacha-root" style={{ position: "fixed", inset: 0, zIndex: 70, background: THEME.bg2 }} />;
-  }
+  if (!mounted) return <div className="gacha-root" style={{ position: "fixed", inset: 0, zIndex: 70, background: THEME.bg2 }} />;
 
   return (
     <div className="gacha-root" style={{
@@ -154,7 +201,6 @@ export default function GachaPage() {
     }}>
       <Starfield hue={THEME.hue} density={0.9} />
 
-      {/* ── TOP RIBBON: tired of gambling? ── */}
       <a href="https://stacsol.app" target="_blank" rel="noopener noreferrer" style={{
         position: "relative", zIndex: 30, display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
         padding: "7px 16px", background: "rgba(124,255,178,0.07)", borderBottom: "1px solid rgba(124,255,178,0.15)",
@@ -167,15 +213,14 @@ export default function GachaPage() {
         <span style={{ color: "rgba(255,255,255,0.4)" }}>↗</span>
       </a>
 
-      {/* ── content layer ── */}
       <div style={{ position: "relative", zIndex: 10, height: "calc(100% - 35px)", overflowY: "auto" }}>
         {stage === "banner" && (
           <Banner
-            approved={approved} pity={pity}
-            globalRolls={globalRolls} earlyBank={earlyBank} divBank={divBank}
-            streak={streak} jackpotSol={live?.jackpotSol || jackpotSol}
-            earliness={earliness} sweptUsd={sweptUsd} threshold={threshold} live={live}
-            onRoll={doRoll} onApprove={() => setShowApproval(true)} onHistory={() => setShowHistory(true)}
+            connected={!!wallet} address={wallet?.publicKey.toBase58() ?? null} solBalance={balance}
+            holdingsCount={holdings.length} delegatedCount={delegatedCount} delegatedUsd={delegatedUsd}
+            pity={pity} streak={streak} jackpotSol={jackpotSol} live={live} points={points} busyRoll={rollBusy}
+            onConnect={() => setShowPicker(true)} onApprove={() => setShowApproval(true)}
+            onRoll={doRoll} onHistory={() => setShowHistory(true)}
           />
         )}
         {stage === "reveal" && pulls[0] && (
@@ -187,7 +232,7 @@ export default function GachaPage() {
         {stage === "summary" && (
           <Stage>
             <div style={{ marginBottom: 22, textAlign: "center" }}>
-              <div style={{ fontSize: 13, letterSpacing: "0.4em", color: THEME.hue, fontFamily: "var(--mono)", fontWeight: 700 }}>10× WISH RESULTS</div>
+              <div style={{ fontSize: 13, letterSpacing: "0.4em", color: THEME.hue, fontFamily: "var(--mono)", fontWeight: 700 }}>{pulls.length}× SWITCHEROO RESULTS</div>
             </div>
             <SummaryGrid pulls={pulls} onReceipt={setReceipt} />
             <AfterActions onAgain={() => doRoll(1)} onAgain10={() => doRoll(10)} onHome={reset} />
@@ -195,19 +240,65 @@ export default function GachaPage() {
         )}
       </div>
 
-      {stage === "wishing" && (
-        <WishOverlay pulls={pulls} isMulti={isMulti} fast={FAST_MODE} onDone={onWishDone} />
-      )}
+      {stage === "resolving" && <Resolving note={resolvingNote.current} />}
+      {stage === "wishing" && <WishOverlay pulls={pulls} isMulti={isMulti} fast={false} onDone={onWishDone} />}
 
-      {showApproval && (
-        <ApprovalSheet threshold={threshold} setThreshold={setThreshold} approved={approved}
-          onApprove={() => { setApproved(true); setTimeout(() => setShowApproval(false), 700); }}
-          onClose={() => setShowApproval(false)} />
+      {showPicker && <WalletPicker onPick={doConnect} onClose={() => setShowPicker(false)} />}
+      {showApproval && wallet && (
+        <ApprovalSheet holdings={holdings} threshold={threshold} setThreshold={setThreshold}
+          busy={approvalBusy} error={approvalError}
+          onApprove={onApprove} onClose={() => { if (!approvalBusy) { setShowApproval(false); setApprovalError(null); } }} />
       )}
       {receipt && <Receipt pull={receipt} onClose={() => setReceipt(null)} />}
       {jackpotWin > 0 && <JackpotWin amountSol={jackpotWin} onClose={() => setJackpotWin(0)} />}
       <HistoryDrawer open={showHistory} history={history} onClose={() => setShowHistory(false)}
         onReceipt={(p) => { setShowHistory(false); setReceipt(p); }} />
+
+      {toast && (
+        <div style={{
+          position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)", zIndex: 80,
+          maxWidth: "90%", padding: "12px 18px", borderRadius: 12, background: "rgba(20,18,31,0.95)",
+          border: "1px solid rgba(255,255,255,0.14)", color: "#fff", fontSize: 13, fontFamily: "var(--mono)",
+          boxShadow: "0 10px 40px rgba(0,0,0,0.5)", textAlign: "center", animation: "fadein .2s ease",
+        }}>{toast}</div>
+      )}
+    </div>
+  );
+}
+
+// Build display Pulls from real swap records (fetches token metadata).
+async function mapPulls(recs: SwapRecord[]): Promise<Pull[]> {
+  return Promise.all(recs.map(async r => pullFromSwap(r, await fetchTokenMeta(r.counterpartyMint))));
+}
+
+// Poll /swaps/:pubkey until `count` new records appear (or timeout). Returns
+// the new records oldest-first so the 10-pull reveals in roll order.
+async function pollForSwaps(base: string, seen: Set<string>, count: number, timeoutMs: number): Promise<SwapRecord[]> {
+  const deadline = Date.now() + timeoutMs;
+  let stableEmpty = 0;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      const d = await fetch(`/api/gacha/swaps/${base}`, { cache: "no-store" }).then(r => r.ok ? r.json() : null);
+      const fresh: SwapRecord[] = (d?.swaps ?? []).filter((s: SwapRecord) => s.requester === base && !seen.has(s.signature));
+      if (fresh.length >= count) return fresh.slice(0, count).reverse();
+      if (fresh.length > 0) { stableEmpty++; if (stableEmpty >= 3) return fresh.reverse(); }
+    } catch { /* keep polling */ }
+  }
+  return [];
+}
+
+function Resolving({ note }: { note: string }) {
+  return (
+    <div style={{ position: "absolute", inset: 0, zIndex: 40, overflow: "hidden", background: "#04020c" }}>
+      <Starfield warp hue="#b8a6ff" density={1.4} />
+      <div style={{
+        position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16,
+      }}>
+        <div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", boxShadow: "0 0 40px 14px #b8a6ff, 0 0 120px 40px #b8a6ff", animation: "aurabreath 1.4s ease-in-out infinite" }} />
+        <div style={{ color: "rgba(255,255,255,0.6)", fontFamily: "var(--mono)", fontSize: 13, letterSpacing: "0.3em", animation: "fadepulse 1.4s ease-in-out infinite" }}>{note.toUpperCase()}</div>
+        <div style={{ color: "rgba(255,255,255,0.3)", fontFamily: "var(--mono)", fontSize: 11 }}>the matchmaker swaps within ~1–2 slots · this is a real on-chain swap</div>
+      </div>
     </div>
   );
 }
@@ -221,16 +312,9 @@ function JackpotWin({ amountSol, onClose }: { amountSol: number; onClose: () => 
       backdropFilter: "blur(6px)", animation: "fadein .25s ease",
     }}>
       <div style={{ fontSize: 64, animation: "aurabreath 1.6s ease-in-out infinite" }}>🎰</div>
-      <div style={{ fontSize: 13, letterSpacing: "0.4em", color: "#ffcb45", fontFamily: "var(--mono)", fontWeight: 800, marginTop: 8 }}>
-        PROGRESSIVE JACKPOT
-      </div>
-      <div style={{
-        fontSize: "clamp(40px, 9vw, 84px)", fontWeight: 900, lineHeight: 1, marginTop: 8,
-        color: "#ffe27d", fontFamily: "var(--mono)", textShadow: "0 0 40px rgba(255,203,69,0.8)",
-      }}>{fmtSol(amountSol)}</div>
-      <div style={{ marginTop: 14, fontSize: 14, color: "rgba(255,255,255,0.6)" }}>
-        The whole pot, paid to your wallet. Provably fair off the same slot hash.
-      </div>
+      <div style={{ fontSize: 13, letterSpacing: "0.4em", color: "#ffcb45", fontFamily: "var(--mono)", fontWeight: 800, marginTop: 8 }}>PROGRESSIVE JACKPOT</div>
+      <div style={{ fontSize: "clamp(40px, 9vw, 84px)", fontWeight: 900, lineHeight: 1, marginTop: 8, color: "#ffe27d", fontFamily: "var(--mono)", textShadow: "0 0 40px rgba(255,203,69,0.8)" }}>{fmtSol(amountSol)}</div>
+      <div style={{ marginTop: 14, fontSize: 14, color: "rgba(255,255,255,0.6)" }}>Paid to your wallet on-chain. Provably fair off the same slot hash.</div>
       <button onClick={onClose} style={{
         marginTop: 26, padding: "12px 28px", borderRadius: 12, border: "none", cursor: "pointer",
         background: "linear-gradient(90deg,#ffcb45,#ff8a3d)", color: "#1a0f02", fontWeight: 800, fontSize: 15,
@@ -248,9 +332,7 @@ function Stage({ children }: { children: ReactNode }) {
   );
 }
 
-function AfterActions({ onAgain, onAgain10, onHome }: {
-  onAgain: () => void; onAgain10: () => void; onHome: () => void;
-}) {
+function AfterActions({ onAgain, onAgain10, onHome }: { onAgain: () => void; onAgain10: () => void; onHome: () => void }) {
   return (
     <div style={{ display: "flex", gap: 12, marginTop: 34, flexWrap: "wrap", justifyContent: "center" }}>
       <button onClick={onHome} style={ghostBtn}>← Banner</button>

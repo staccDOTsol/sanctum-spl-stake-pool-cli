@@ -1,16 +1,21 @@
 "use client";
 
-// The home / gacha banner screen.
+// Gacha banner / home — real wallet state and live matchmaker data.
 
 import type { CSSProperties } from "react";
 import {
-  POOL, RARITIES, PITY_HARD, PITY_SOFT, PROTOCOL_GENESIS_ROLLS,
-  Theme, LiveStats, sweepByThreshold, earlyPointsFor, ticketsForStreak,
-  fmtUsd, fmtPts, fmtSol,
+  POOL, RARITIES, PITY_HARD, PITY_SOFT, Theme, LiveStats, ticketsForStreak, fmtSol,
 } from "@/lib/gacha/data";
 import { RarityCoin, SparkleRain } from "./Fx";
 
-// pity ramp bar segments
+export interface PointsInfo {
+  rollNumber: number;
+  totalRollers: number;
+  cumulativePoints: number;
+  totalEarnedSol: number;
+  pendingSol: number;
+}
+
 export function OddsBar() {
   const segs = (["common", "rare", "epic", "legendary", "jackpot"] as const)
     .map(k => [k, RARITIES[k].odds] as const);
@@ -35,36 +40,42 @@ export function OddsBar() {
   );
 }
 
-export function Banner({ approved, pity, globalRolls, earlyBank, divBank, streak, jackpotSol, earliness, sweptUsd, threshold, live, onRoll, onApprove, onHistory }: {
+export function Banner({
+  connected, address, solBalance, holdingsCount, delegatedCount, delegatedUsd,
+  pity, streak, jackpotSol, live, points, busyRoll,
+  onConnect, onApprove, onRoll, onHistory,
+}: {
   theme?: Theme;
-  approved: boolean;
+  connected: boolean;
+  address: string | null;
+  solBalance: number;
+  holdingsCount: number;
+  delegatedCount: number;
+  delegatedUsd: number | null;
   pity: number;
-  globalRolls: number;
-  earlyBank: number;
-  divBank: number;
   streak: number;
   jackpotSol: number;
-  earliness: number;
-  sweptUsd: number;
-  threshold: number;
   live: LiveStats | null;
-  onRoll: (count: number) => void;
+  points: PointsInfo | null;
+  busyRoll: string | null;
+  onConnect: () => void;
   onApprove: () => void;
+  onRoll: (count: number) => void;
   onHistory: () => void;
 }) {
-  const featured = POOL.legendary[0]; // rate-up character
+  const featured = POOL.legendary[0];
   const pityLeft = PITY_HARD - pity;
   const pityPct = Math.min(100, (pity / PITY_HARD) * 100);
-  const rollIndex = globalRolls - PROTOCOL_GENESIS_ROLLS;
-  const nextMint = earlyPointsFor(rollIndex + 1);
   const rollFee = live?.minRollFeeSol ?? 0.003;
   const tickets = ticketsForStreak(streak);
   const jackpotOdds = live?.jackpotOddsPerTicket || 1000;
+  const canRoll = connected && delegatedCount > 0 && !busyRoll;
+  const short = address ? address.slice(0, 4) + "…" + address.slice(-4) : "";
 
   return (
     <div style={{ maxWidth: 1080, margin: "0 auto", padding: "22px 22px 50px" }}>
       {/* top bar */}
-      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 26 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 26, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 24 }}>⇄</span>
           <div>
@@ -76,21 +87,25 @@ export function Banner({ approved, pity, globalRolls, earlyBank, divBank, streak
           {live && (
             <div style={{ ...pill, gap: 8, cursor: "default" }}>
               <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#7CFFB2", boxShadow: "0 0 8px #7CFFB2", animation: "fadepulse 1.4s infinite" }} />
-              <span style={{ color: "rgba(255,255,255,0.55)" }}>pool {live.poolSize} · {live.totalRolls} rolls</span>
+              <span style={{ color: "rgba(255,255,255,0.55)" }}>pool {live.poolSize} · {live.totalSwaps} swaps</span>
             </div>
           )}
-          <button onClick={onHistory} style={pill}>
-            <span style={{ color: "rgba(255,255,255,0.55)" }}>⊞ Collection</span>
-          </button>
-          <div style={{ ...pill, gap: 8, cursor: "default" }}>
-            <span style={{ width: 7, height: 7, borderRadius: "50%", background: approved ? "#7CFFB2" : "#ff8aa6", boxShadow: `0 0 8px ${approved ? "#7CFFB2" : "#ff8aa6"}` }} />
-            <span style={{ color: "#fff", fontWeight: 700 }}>9xQp…4z7k</span>
-            <span style={{ color: "rgba(255,255,255,0.4)" }}>2.84 ◎</span>
-          </div>
+          {connected && <button onClick={onHistory} style={pill}><span style={{ color: "rgba(255,255,255,0.55)" }}>⊞ Collection</span></button>}
+          {connected ? (
+            <div style={{ ...pill, gap: 8, cursor: "default" }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: delegatedCount > 0 ? "#7CFFB2" : "#ff8aa6", boxShadow: `0 0 8px ${delegatedCount > 0 ? "#7CFFB2" : "#ff8aa6"}` }} />
+              <span style={{ color: "#fff", fontWeight: 700 }}>{short}</span>
+              <span style={{ color: "rgba(255,255,255,0.4)" }}>{solBalance.toFixed(3)} ◎</span>
+            </div>
+          ) : (
+            <button onClick={onConnect} style={{ ...pill, background: "linear-gradient(90deg,#b06bff,#7a32d6)", border: "none", color: "#fff", fontWeight: 800 }}>
+              Connect wallet
+            </button>
+          )}
         </div>
       </div>
 
-      {/* HERO BANNER */}
+      {/* HERO */}
       <div style={{
         position: "relative", borderRadius: 22, overflow: "hidden", marginBottom: 18,
         background: RARITIES.legendary.bg, border: "1px solid rgba(255,203,69,0.25)",
@@ -102,13 +117,13 @@ export function Banner({ approved, pity, globalRolls, earlyBank, divBank, streak
           <div style={{ flex: 1, minWidth: 240 }}>
             <div style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 12px", borderRadius: 999, background: "rgba(255,203,69,0.14)", border: "1px solid rgba(255,203,69,0.35)", marginBottom: 12 }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#ffcb45", animation: "fadepulse 1.2s infinite" }} />
-              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.2em", color: "#ffcb45", fontFamily: "var(--mono)" }}>RATE-UP BANNER · LIVE</span>
+              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.2em", color: "#ffcb45", fontFamily: "var(--mono)" }}>MAINNET · LIVE</span>
             </div>
             <h1 style={{ fontSize: "clamp(26px, 4vw, 40px)", fontWeight: 900, lineHeight: 1.05, color: "#fff", margin: "0 0 8px", letterSpacing: "-0.02em" }}>
               The Switcheroo
             </h1>
             <p style={{ fontSize: 14, color: "rgba(255,255,255,0.55)", lineHeight: 1.5, margin: "0 0 4px", maxWidth: 480 }}>
-              Delegate your bags, pay a roll fee, get swapped with a random stranger&apos;s. <strong style={{ color: "#ffcb45" }}>0.86× to 10,000×.</strong> Provably fair on Solana slot hashes.
+              Delegate your real bags, pay a roll fee, get swapped with a random stranger&apos;s. <strong style={{ color: "#ffcb45" }}>0.86× to 10,000×.</strong> Provably fair on Solana slot hashes.
             </p>
             <div style={{ fontSize: 12, fontFamily: "var(--mono)", color: "#7CFFB2", marginTop: 6 }}>
               100% gacha · no house edge — the edge pays it forward
@@ -117,7 +132,7 @@ export function Banner({ approved, pity, globalRolls, earlyBank, divBank, streak
         </div>
       </div>
 
-      {/* PROGRESSIVE JACKPOT + PARLAY strip */}
+      {/* JACKPOT + PARLAY */}
       <div style={{
         position: "relative", overflow: "hidden", borderRadius: 18, marginBottom: 12,
         padding: "18px 22px", display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap",
@@ -148,41 +163,42 @@ export function Banner({ approved, pity, globalRolls, earlyBank, divBank, streak
         </div>
       </div>
 
-      {/* stat strip: EARLY ROLLER DIVIDENDS */}
+      {/* stat strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 18 }}>
-        <StatCard label="$EARLY MINED" value={fmtPts(earlyBank)} accent="#ffcb45" sub={`next wish mints +${fmtPts(nextMint)}`} />
-        <StatCard label="DIVIDENDS EARNED" value={fmtUsd(divBank)} accent="#7CFFB2" sub="paid by rollers after you" />
-        <StatCard label="YOUR EARLINESS" value={earliness.toFixed(1) + "%"} accent="#b06bff" sub={`roll #${rollIndex.toLocaleString("en-US")} · earlier = exponentially more`} />
+        <StatCard label="YOUR ROLLS" value={points ? `#${points.rollNumber}` : "—"} accent="#b06bff" sub={points ? `of ${points.totalRollers.toLocaleString("en-US")} rollers · earlier earns more` : "roll to join the dividend ledger"} />
+        <StatCard label="DIVIDENDS EARNED" value={points ? fmtSol(points.totalEarnedSol) : "0 ◎"} accent="#7CFFB2" sub={points && points.pendingSol > 0 ? `${fmtSol(points.pendingSol)} pending` : "paid by rollers after you"} />
+        <StatCard label="DIVIDEND POINTS" value={points ? points.cumulativePoints.toLocaleString("en-US") : "0"} accent="#ffcb45" sub="exponential weight by join order" />
       </div>
 
       {/* main play card */}
       <div style={{ borderRadius: 20, padding: 24, marginBottom: 18, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.09)" }}>
-        {/* stake / approval row */}
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20, flexWrap: "wrap" }}>
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", fontFamily: "var(--mono)", letterSpacing: "0.14em", marginBottom: 6 }}>POOL STAKE — ONE-SWOOP APPROVAL</div>
-            {approved ? (
+            {!connected ? (
+              <div style={{ fontSize: 14, color: "rgba(255,255,255,0.5)" }}>Connect a wallet to delegate your real bags.</div>
+            ) : delegatedCount > 0 ? (
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 22, fontWeight: 900, color: "#fff", fontFamily: "var(--mono)" }}>{fmtUsd(sweptUsd)}</span>
-                <span style={{ fontSize: 12, color: "#7CFFB2", fontFamily: "var(--mono)" }}>✓ {sweepByThreshold(threshold).length} tokens delegated (&lt;{fmtUsd(threshold)})</span>
+                <span style={{ fontSize: 22, fontWeight: 900, color: "#fff", fontFamily: "var(--mono)" }}>{delegatedUsd !== null ? fmtUsd(delegatedUsd) : `${delegatedCount} tokens`}</span>
+                <span style={{ fontSize: 12, color: "#7CFFB2", fontFamily: "var(--mono)" }}>✓ {delegatedCount} delegated · armed</span>
               </div>
             ) : (
-              <div style={{ fontSize: 14, color: "rgba(255,255,255,0.5)" }}>Not delegated yet — sweep your sub-threshold bags in one signature.</div>
+              <div style={{ fontSize: 14, color: "rgba(255,255,255,0.5)" }}>{holdingsCount} tokens in wallet — none delegated yet.</div>
             )}
           </div>
-          <button onClick={onApprove} style={{
+          <button onClick={connected ? onApprove : onConnect} style={{
             padding: "11px 18px", borderRadius: 11, cursor: "pointer",
-            background: approved ? "rgba(255,255,255,0.06)" : "linear-gradient(90deg,#b06bff,#7a32d6)",
-            border: approved ? "1px solid rgba(255,255,255,0.16)" : "none",
+            background: delegatedCount > 0 ? "rgba(255,255,255,0.06)" : "linear-gradient(90deg,#b06bff,#7a32d6)",
+            border: delegatedCount > 0 ? "1px solid rgba(255,255,255,0.16)" : "none",
             color: "#fff", fontWeight: 700, fontSize: 13,
-            boxShadow: approved ? "none" : "0 6px 20px rgba(176,107,255,0.35)",
-          }}>{approved ? "Edit sweep" : "Approve & sweep"}</button>
+            boxShadow: delegatedCount > 0 ? "none" : "0 6px 20px rgba(176,107,255,0.35)",
+          }}>{!connected ? "Connect wallet" : delegatedCount > 0 ? "Edit / add tokens" : "Approve & sweep"}</button>
         </div>
 
         {/* pity */}
         <div style={{ marginBottom: 18 }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 7, fontSize: 12, fontFamily: "var(--mono)" }}>
-            <span style={{ color: "rgba(255,255,255,0.5)" }}>PITY · guaranteed SSR in {pityLeft}</span>
+            <span style={{ color: "rgba(255,255,255,0.5)" }}>PITY · up-only guaranteed in {pityLeft}</span>
             <span style={{ color: pity >= PITY_SOFT ? "#ffcb45" : "rgba(255,255,255,0.6)" }}>{pity} / {PITY_HARD} {pity >= PITY_SOFT ? "· SOFT PITY 🔥" : ""}</span>
           </div>
           <div style={{ height: 8, borderRadius: 5, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
@@ -196,34 +212,38 @@ export function Banner({ approved, pity, globalRolls, earlyBank, divBank, streak
 
         {/* odds */}
         <div style={{ marginBottom: 22 }}>
-          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", fontFamily: "var(--mono)", letterSpacing: "0.14em", marginBottom: 10 }}>BANNER ODDS (RATE-UP APPLIED)</div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", fontFamily: "var(--mono)", letterSpacing: "0.14em", marginBottom: 10 }}>RARITY BANDS (BY USD SWING)</div>
           <OddsBar />
         </div>
 
         {/* roll buttons */}
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-          <button onClick={() => onRoll(1)} style={{
-            flex: 1, minWidth: 160, padding: "18px", borderRadius: 14, cursor: "pointer",
-            background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.16)", color: "#fff",
+          <button onClick={() => onRoll(1)} disabled={!canRoll} style={{
+            flex: 1, minWidth: 160, padding: "18px", borderRadius: 14, cursor: canRoll ? "pointer" : "default",
+            background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.16)", color: "#fff", opacity: canRoll ? 1 : 0.5,
           }}>
-            <div style={{ fontSize: 19, fontWeight: 900 }}>Wish ×1</div>
+            <div style={{ fontSize: 19, fontWeight: 900 }}>{busyRoll || "Wish ×1"}</div>
             <div style={{ fontSize: 12, fontFamily: "var(--mono)", color: "rgba(255,255,255,0.5)", marginTop: 3 }}>{rollFee} ◎ roll fee</div>
           </button>
-          <button onClick={() => onRoll(10)} style={{
-            flex: 1.4, minWidth: 200, padding: "18px", borderRadius: 14, cursor: "pointer", border: "none", position: "relative", overflow: "hidden",
-            background: "linear-gradient(90deg,#b06bff,#7a32d6)", color: "#fff",
+          <button onClick={() => onRoll(10)} disabled={!canRoll} style={{
+            flex: 1.4, minWidth: 200, padding: "18px", borderRadius: 14, cursor: canRoll ? "pointer" : "default", border: "none", position: "relative", overflow: "hidden",
+            background: "linear-gradient(90deg,#b06bff,#7a32d6)", color: "#fff", opacity: canRoll ? 1 : 0.5,
             boxShadow: "0 10px 34px rgba(176,107,255,0.45)",
           }}>
-            <div style={{ position: "absolute", top: 8, right: 12, fontSize: 10, fontFamily: "var(--mono)", fontWeight: 800, color: "#ffe9a8", letterSpacing: "0.1em" }}>1 GUARANTEED 4★+</div>
-            <div style={{ fontSize: 19, fontWeight: 900 }}>Wish ×10</div>
+            <div style={{ position: "absolute", top: 8, right: 12, fontSize: 10, fontFamily: "var(--mono)", fontWeight: 800, color: "#ffe9a8", letterSpacing: "0.1em" }}>10 SWAPS · 10🎟</div>
+            <div style={{ fontSize: 19, fontWeight: 900 }}>{busyRoll || "Wish ×10"}</div>
             <div style={{ fontSize: 12, fontFamily: "var(--mono)", color: "rgba(255,255,255,0.8)", marginTop: 3 }}>{+(rollFee * 10).toFixed(4)} ◎ roll fee</div>
           </button>
         </div>
+        {connected && delegatedCount === 0 && (
+          <div style={{ marginTop: 12, fontSize: 12, color: "rgba(255,203,69,0.8)", fontFamily: "var(--mono)", textAlign: "center" }}>
+            Delegate at least one token before you can wish.
+          </div>
+        )}
       </div>
 
       <div style={{
-        textAlign: "center", margin: "0 auto 14px", maxWidth: 560,
-        padding: "8px 16px", borderRadius: 999,
+        textAlign: "center", margin: "0 auto 14px", maxWidth: 560, padding: "8px 16px", borderRadius: 999,
         background: "rgba(124,255,178,0.07)", border: "1px solid rgba(124,255,178,0.2)",
         fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", color: "#7CFFB2",
       }}>
@@ -231,11 +251,17 @@ export function Banner({ approved, pity, globalRolls, earlyBank, divBank, streak
       </div>
 
       <div style={{ textAlign: "center", fontSize: 11, color: "rgba(255,255,255,0.3)", fontFamily: "var(--mono)", lineHeight: 1.6 }}>
-        100% custodial. The matchmaker holds delegate + close authority on every swept ATA. That&apos;s the whole trick.<br />
+        100% custodial while pooled. The matchmaker holds delegate + close authority on every delegated ATA. That&apos;s the whole trick.<br />
         Rent (~{live?.rentPerSwapSol ?? 0.00408} ◎/swap) is the only skim. Everything else is zero-sum degeneracy.
       </div>
     </div>
   );
+}
+
+function fmtUsd(n: number): string {
+  if (n >= 1_000_000) return "$" + (n / 1_000_000).toFixed(2) + "M";
+  if (n >= 10_000) return "$" + (n / 1000).toFixed(1) + "k";
+  return "$" + n.toLocaleString("en-US");
 }
 
 export function StatCard({ label, value, sub, accent }: {

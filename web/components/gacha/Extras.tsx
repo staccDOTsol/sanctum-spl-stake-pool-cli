@@ -49,17 +49,19 @@ export function SummaryGrid({ pulls, onReceipt }: {
           );
         })}
       </div>
-      <div style={{
-        marginTop: 18, display: "flex", justifyContent: "center", gap: 26,
-        fontFamily: "var(--mono)", fontSize: 13,
-      }}>
-        <span style={{ color: "rgba(255,255,255,0.5)" }}>10 wishes ·
-          <span style={{ color: "#ffcb45", fontWeight: 700 }}> +{fmtPts(totalEarly)} $EARLY</span>
-        </span>
-        <span style={{ color: "rgba(255,255,255,0.5)" }}>edge paid back ·
-          <span style={{ color: "#7CFFB2", fontWeight: 700 }}> +{fmtUsd(totalDiv)}</span>
-        </span>
-      </div>
+      {(totalEarly > 0 || totalDiv > 0) && (
+        <div style={{
+          marginTop: 18, display: "flex", justifyContent: "center", gap: 26,
+          fontFamily: "var(--mono)", fontSize: 13,
+        }}>
+          <span style={{ color: "rgba(255,255,255,0.5)" }}>{pulls.length} wishes ·
+            <span style={{ color: "#ffcb45", fontWeight: 700 }}> +{fmtPts(totalEarly)} $EARLY</span>
+          </span>
+          <span style={{ color: "rgba(255,255,255,0.5)" }}>edge paid back ·
+            <span style={{ color: "#7CFFB2", fontWeight: 700 }}> +{fmtUsd(totalDiv)}</span>
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -100,8 +102,8 @@ export function Receipt({ pull, onClose }: { pull: Pull; onClose: () => void }) 
           {row("Requester", "9xQp…" + pull.slotHash.slice(0, 4))}
           {row("seed = sha256(hash ‖ pubkey)", "→ index")}
           {row("Selected index", pull.selectedIndex + " / " + pull.poolSize)}
-          {row("$EARLY minted", <span style={{ color: "#ffcb45", fontWeight: 700 }}>+{fmtPts(pull.earlyPts)}</span>, false)}
-          {row("Dividend to prior roller", <span style={{ color: "#7CFFB2", fontWeight: 700 }}>{fmtUsd(pull.dividend)}</span>, false)}
+          {pull.earlyPts > 0 && row("$EARLY minted", <span style={{ color: "#ffcb45", fontWeight: 700 }}>+{fmtPts(pull.earlyPts)}</span>, false)}
+          {pull.dividend > 0 && row("Dividend to prior roller", <span style={{ color: "#7CFFB2", fontWeight: 700 }}>{fmtUsd(pull.dividend)}</span>, false)}
         </div>
         <div style={{ padding: "0 22px 20px" }}>
           <div style={{ fontSize: 11, lineHeight: 1.5, color: "rgba(255,255,255,0.4)", marginBottom: 14 }}>
