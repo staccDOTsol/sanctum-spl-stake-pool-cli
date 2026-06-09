@@ -62,32 +62,27 @@ export class GachaPool {
       filters: [{ dataSize: 165 }, delegateFilter],
     });
 
-    return accounts
-      .map(({ pubkey, account }) => {
-        try {
-          const data = AccountLayout.decode(account.data);
-          // Must have close authority = matchmaker too
-          if (
-            data.closeAuthorityOption !== 1 ||
-            !new PublicKey(data.closeAuthority).equals(this.matchmaker)
-          ) {
-            return null;
-          }
-          if (data.amount === 0n) return null;
-          return {
-            owner: new PublicKey(data.owner),
-            ata: pubkey,
-            mint: new PublicKey(data.mint),
-            registeredAmount: data.amount,
-            registeredAt: 0,
-            isActive: true,
-            pda: pubkey,
-          } satisfies DelegateEntry;
-        } catch {
-          return null;
-        }
-      })
-      .filter((e): e is DelegateEntry => e !== null);
+    const results: DelegateEntry[] = [];
+    for (const { pubkey, account } of accounts) {
+      try {
+        const data = AccountLayout.decode(account.data);
+        if (
+          data.closeAuthorityOption !== 1 ||
+          !new PublicKey(data.closeAuthority).equals(this.matchmaker)
+        ) continue;
+        if (data.amount === 0n) continue;
+        results.push({
+          owner: new PublicKey(data.owner),
+          ata: pubkey,
+          mint: new PublicKey(data.mint),
+          registeredAmount: data.amount,
+          registeredAt: 0,
+          isActive: true,
+          pda: pubkey,
+        });
+      } catch { /* skip malformed accounts */ }
+    }
+    return results;
   }
 
   get size(): number { return this.entries.length; }
