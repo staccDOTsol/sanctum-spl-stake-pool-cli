@@ -4,7 +4,7 @@
  * Uses raw fetch (no @solana/web3.js in the edge runtime).
  */
 
-const RPC = process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com";
+const RPC = process.env.SOLANA_RPC_URL ?? "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8";
 
 // Meteora DBC pool account layout — base_vault at offset 136
 const BASE_VAULT_OFFSET = 136;
@@ -82,7 +82,11 @@ export async function fetchPoolRatio(
   ]);
 
   const total = leakReserve + dontLeakReserve;
-  const r = total === BigInt(0) ? 0 : Math.max(0, Math.min(1, Number(leakReserve) / Number(total)));
+  // Square-root curve: r = sqrt(Leak / total).
+  // DontLeak must square their position to halve each decrement — exponential cost to suppress.
+  // At parity r≈0.71; to hold r<0.5 DontLeak needs 3× more tokens; r<0.1 needs 99×.
+  const p = total === BigInt(0) ? 0 : Number(leakReserve) / Number(total);
+  const r = Math.sqrt(Math.max(0, Math.min(1, p)));
 
   return { leakReserve, dontLeakReserve, r, slot };
 }

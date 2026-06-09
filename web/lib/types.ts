@@ -1,4 +1,5 @@
 export type ContentType = "png" | "jpeg" | "text" | "audio" | "video";
+export type PoolType   = "stable" | "meme" | "quota";
 
 export type ContentTag =
   | "Hot"
@@ -42,6 +43,8 @@ export interface ContentEntry {
   creator?: string;
   creatorAddress?: string;
   metadataUrl?: string;
+  poolType?: PoolType;
+  quoteMint?: string;
 }
 
 export interface RankedContent extends ContentEntry {

@@ -7,18 +7,16 @@ import type { PoolSnapshot } from "./types";
 
 const PLACEHOLDER = "11111111111111111111111111111111";
 
-const MOCK_RATIOS: Record<string, number> = {
-  "seed-1": 0.42,
-  "seed-2": 0.71,
-  "seed-3": 0.18,
-};
+const MOCK_RATIOS: Record<string, number> = {};
 
 export function getMockSnapshot(id: string, poolAddress: string): PoolSnapshot | null {
   if (poolAddress !== PLACEHOLDER) return null;
   const r = MOCK_RATIOS[id] ?? 0.5;
+  // Back-calculate linear pool share p = r² so reserves are consistent with the sqrt curve.
+  const p = r * r;
   return {
-    leakReserve: String(Math.round(r * 1e12)),
-    dontLeakReserve: String(Math.round((1 - r) * 1e12)),
+    leakReserve: String(Math.round(p * 1e12)),
+    dontLeakReserve: String(Math.round((1 - p) * 1e12)),
     r,
     tvl: Math.round(r * 8000 + 500),
     slot: 0,
