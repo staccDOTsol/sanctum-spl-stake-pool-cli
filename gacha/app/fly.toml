@@ -1,0 +1,23 @@
+app = "gacha-matchmaker"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  SOLANA_RPC = "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8"
+
+# Set secrets via: fly secrets set MATCHMAKER_KEYPAIR=... JUP_API_KEY=... GACHA_PROGRAM_ID=...
+
+[[services]]
+  internal_port = 3000
+  protocol = "tcp"
+
+  # Health check so Fly knows the process is alive
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
+
+[processes]
+  matchmaker = "node dist/index.js matchmaker"

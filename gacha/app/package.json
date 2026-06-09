@@ -1,0 +1,28 @@
+{
+  "name": "gacha-matchmaker",
+  "version": "0.1.0",
+  "description": "Offchain matchmaker + CLI for the Solana gacha",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "matchmaker": "ts-node src/index.ts matchmaker",
+    "register": "ts-node src/index.ts register",
+    "deregister": "ts-node src/index.ts deregister",
+    "pool": "ts-node src/index.ts pool"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.30.1",
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.98.0",
+    "bs58": "^6.0.0",
+    "commander": "^12.0.0",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}
