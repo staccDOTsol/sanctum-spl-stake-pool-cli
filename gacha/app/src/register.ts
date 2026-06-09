@@ -27,22 +27,23 @@ import {
   createSetAuthorityInstruction,
 } from "@solana/spl-token";
 
-const PROGRAM_ID = new PublicKey(
-  process.env.GACHA_PROGRAM_ID ??
-    "GacHa1111111111111111111111111111111111111111"
-);
+function getProgramId(): PublicKey {
+  const id = process.env.GACHA_PROGRAM_ID;
+  if (!id) throw new Error("GACHA_PROGRAM_ID env var not set");
+  return new PublicKey(id);
+}
 
 const CONFIG_SEED = Buffer.from("config");
 const DELEGATE_SEED = Buffer.from("delegate");
 
 function deriveConfigPda(): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync([CONFIG_SEED], PROGRAM_ID);
+  return PublicKey.findProgramAddressSync([CONFIG_SEED], getProgramId());
 }
 
 function deriveDelegateEntryPda(owner: PublicKey, ata: PublicKey): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [DELEGATE_SEED, owner.toBuffer(), ata.toBuffer()],
-    PROGRAM_ID
+    getProgramId()
   );
 }
 
@@ -91,7 +92,7 @@ export async function registerDelegate(
   data.writeBigUInt64LE(amount, 8);
 
   const registerIx = new TransactionInstruction({
-    programId: PROGRAM_ID,
+    programId: getProgramId(),
     keys: [
       { pubkey: user.publicKey, isSigner: true, isWritable: true },
       { pubkey: config, isSigner: false, isWritable: false },
@@ -125,7 +126,7 @@ export async function deregisterDelegate(
   disc.copy(data, 0);
 
   const ix = new TransactionInstruction({
-    programId: PROGRAM_ID,
+    programId: getProgramId(),
     keys: [
       { pubkey: user.publicKey, isSigner: true, isWritable: false },
       { pubkey: delegateEntry, isSigner: false, isWritable: true },
@@ -159,7 +160,7 @@ export async function requestRoll(
   data.writeBigUInt64LE(rollFeeLamports, 8);
 
   const ix = new TransactionInstruction({
-    programId: PROGRAM_ID,
+    programId: getProgramId(),
     keys: [
       { pubkey: user.publicKey, isSigner: true, isWritable: true },
       { pubkey: config, isSigner: false, isWritable: false },

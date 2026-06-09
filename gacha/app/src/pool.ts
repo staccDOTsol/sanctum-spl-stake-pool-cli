@@ -15,10 +15,11 @@ import {
 } from "@solana/web3.js";
 import { DelegateEntry } from "./types.js";
 
-const PROGRAM_ID = new PublicKey(
-  process.env.GACHA_PROGRAM_ID ??
-    "GacHa1111111111111111111111111111111111111111"
-);
+function getProgramId(): PublicKey {
+  const id = process.env.GACHA_PROGRAM_ID;
+  if (!id) throw new Error("GACHA_PROGRAM_ID env var not set");
+  return new PublicKey(id);
+}
 
 // Discriminator for DelegateEntry (first 8 bytes of sha256("account:DelegateEntry"))
 // Recompute with: `anchor build && cat target/idl/gacha.json | jq .accounts`
@@ -41,7 +42,7 @@ export class GachaPool {
       { memcmp: { offset: 8 + 32 + 32 + 32 + 8 + 8, bytes: "01" } }, // is_active = true (offset 112, value 0x01)
     ];
 
-    const accounts = await this.connection.getProgramAccounts(PROGRAM_ID, {
+    const accounts = await this.connection.getProgramAccounts(getProgramId(), {
       filters,
       encoding: "base64",
     });

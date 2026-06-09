@@ -32,10 +32,11 @@ import { GachaPool } from "./pool.js";
 import { getSwapBasedUsdValue } from "./jupiter.js";
 import { RollRequest, SwapResult } from "./types.js";
 
-const PROGRAM_ID = new PublicKey(
-  process.env.GACHA_PROGRAM_ID ??
-    "GacHa1111111111111111111111111111111111111111"
-);
+function getProgramId(): PublicKey {
+  const id = process.env.GACHA_PROGRAM_ID;
+  if (!id) throw new Error("GACHA_PROGRAM_ID env var not set");
+  return new PublicKey(id);
+}
 
 const SLOT_HASHES_SYSVAR = new PublicKey(
   "SysvarS1otHashes111111111111111111111111111"
@@ -45,13 +46,13 @@ const CONFIG_SEED = Buffer.from("config");
 const DELEGATE_SEED = Buffer.from("delegate");
 
 function deriveConfigPda(): PublicKey {
-  return PublicKey.findProgramAddressSync([CONFIG_SEED], PROGRAM_ID)[0];
+  return PublicKey.findProgramAddressSync([CONFIG_SEED], getProgramId())[0];
 }
 
 function deriveDelegateEntryPda(owner: PublicKey, ata: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(
     [DELEGATE_SEED, owner.toBuffer(), ata.toBuffer()],
-    PROGRAM_ID
+    getProgramId()
   )[0];
 }
 
@@ -79,7 +80,7 @@ export class Matchmaker {
     await this.pool.sync();
 
     // Subscribe to program logs for RollRequested events
-    this.connection.onLogs(PROGRAM_ID, async (logs) => {
+    this.connection.onLogs(getProgramId(), async (logs) => {
       const roll = parseRollRequestedLog(logs.logs);
       if (!roll) return;
 
@@ -220,7 +221,7 @@ export class Matchmaker {
     data.writeBigUInt64LE(randomIndex, 24);
 
     const ix = new TransactionInstruction({
-      programId: PROGRAM_ID,
+      programId: getProgramId(),
       keys: [
         { pubkey: this.keypair.publicKey, isSigner: true, isWritable: true },
         { pubkey: config, isSigner: false, isWritable: true },
