@@ -16,6 +16,7 @@
  */
 
 import { Connection, PublicKey } from "@solana/web3.js";
+import { JUP_BASE, JUP_HEADERS } from "./jupiter.js";
 
 export enum TokenTier {
   BLUE_CHIP = 1,
@@ -43,13 +44,15 @@ let blueChipMints = new Set<string>();
 /** Fetch Jupiter verified list (≈ Pyth oracle coverage). Call once at startup. */
 export async function loadTierLists(): Promise<void> {
   try {
-    const resp = await fetch("https://tokens.jup.ag/tokens?tags=verified", {
+    const resp = await fetch(`${JUP_BASE}/tokens/v2/tag?query=verified`, {
+      headers: JUP_HEADERS,
       signal: AbortSignal.timeout(10_000),
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const tokens: Array<{ address: string }> = await resp.json() as Array<{ address: string }>;
-    blueChipMints = new Set(tokens.map(t => t.address));
-    console.log(`[tiers] loaded ${blueChipMints.size} blue-chip (Pyth/verified) mints`);
+    // v2 returns an array of token objects keyed by `id` (mint).
+    const tokens = await resp.json() as Array<{ id?: string; address?: string }>;
+    blueChipMints = new Set(tokens.map(t => t.id ?? t.address).filter((m): m is string => !!m));
+    console.log(`[tiers] loaded ${blueChipMints.size} blue-chip (verified) mints`);
   } catch (e) {
     console.warn("[tiers] could not load blue-chip list, all tokens default to UNKNOWN:", e);
   }
@@ -149,7 +152,8 @@ const LAUNCHPAD_TAGS = new Set(["pump", "moonshot", "boop", "launch"]);
 
 async function hasLaunchpadTag(mint: string): Promise<boolean> {
   try {
-    const resp = await fetch(`https://tokens.jup.ag/token/${mint}`, {
+    const resp = await fetch(`${JUP_BASE}/tokens/v1/token/${mint}`, {
+      headers: JUP_HEADERS,
       signal: AbortSignal.timeout(5_000),
     });
     if (!resp.ok) return false;
