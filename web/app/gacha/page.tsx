@@ -56,6 +56,7 @@ export default function GachaPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [shaking, shake] = useScreenShake();
   const resolvingNote = useRef("Resolving slot hash…");
+  const cancelRef = useRef(false);
 
   useEffect(() => { setMounted(true); document.body.classList.add("gacha-mode"); return () => document.body.classList.remove("gacha-mode"); }, []);
 
@@ -145,7 +146,18 @@ export default function GachaPage() {
     if (delegatedCount === 0) { setShowApproval(true); return; }
     const base = wallet.publicKey.toBase58();
     try {
+      // Pre-flight: don't charge a roll fee that can't produce a swap. A swap
+      // needs ≥2 distinct delegated owners (you + someone else).
+      setRollBusy("Checking pool…");
+      const pre = await fetch("/api/gacha/stats", { cache: "no-store" }).then(r => r.ok ? r.json() : null).catch(() => null);
+      if (pre && (pre.poolOwners ?? 0) < 2) {
+        setRollBusy(null);
+        showToast("No counterparty yet — the pool needs a second delegated wallet before any swap can happen. You're the only one in right now, so your fee wasn't charged.");
+        return;
+      }
+
       setRollBusy("Sign roll…");
+      cancelRef.current = false;
       // baseline: which of my swaps already exist
       const before = await fetch(`/api/gacha/swaps/${base}`).then(r => r.ok ? r.json() : { swaps: [] }).catch(() => ({ swaps: [] }));
       const seen = new Set<string>((before.swaps ?? []).map((s: SwapRecord) => s.signature));
@@ -159,10 +171,11 @@ export default function GachaPage() {
       setStage("resolving");
 
       // poll for the matchmaker's executed swap(s)
-      const fresh = await pollForSwaps(base, seen, count, 60_000);
+      const fresh = await pollForSwaps(base, seen, count, 60_000, () => cancelRef.current);
+      if (cancelRef.current) { refresh(wallet); return; }
       if (fresh.length === 0) {
         setStage("banner");
-        showToast("No same-tier counterparty in the pool yet — your fee funded the jackpot + dividends. Try again as the pool fills.");
+        showToast("No same-tier counterparty resolved in time — your fee funded the jackpot + dividends. Try again as the pool fills.");
         refresh(wallet);
         return;
       }
@@ -240,7 +253,7 @@ export default function GachaPage() {
         )}
       </div>
 
-      {stage === "resolving" && <Resolving note={resolvingNote.current} />}
+      {stage === "resolving" && <Resolving note={resolvingNote.current} onCancel={() => { cancelRef.current = true; setStage("banner"); }} />}
       {stage === "wishing" && <WishOverlay pulls={pulls} isMulti={isMulti} fast={false} onDone={onWishDone} />}
 
       {showPicker && <WalletPicker onPick={doConnect} onClose={() => setShowPicker(false)} />}
@@ -273,11 +286,12 @@ async function mapPulls(recs: SwapRecord[]): Promise<Pull[]> {
 
 // Poll /swaps/:pubkey until `count` new records appear (or timeout). Returns
 // the new records oldest-first so the 10-pull reveals in roll order.
-async function pollForSwaps(base: string, seen: Set<string>, count: number, timeoutMs: number): Promise<SwapRecord[]> {
+async function pollForSwaps(base: string, seen: Set<string>, count: number, timeoutMs: number, cancelled: () => boolean): Promise<SwapRecord[]> {
   const deadline = Date.now() + timeoutMs;
   let stableEmpty = 0;
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 2500));
+    if (cancelled()) return [];
     try {
       const d = await fetch(`/api/gacha/swaps/${base}`, { cache: "no-store" }).then(r => r.ok ? r.json() : null);
       const fresh: SwapRecord[] = (d?.swaps ?? []).filter((s: SwapRecord) => s.requester === base && !seen.has(s.signature));
@@ -288,7 +302,9 @@ async function pollForSwaps(base: string, seen: Set<string>, count: number, time
   return [];
 }
 
-function Resolving({ note }: { note: string }) {
+function Resolving({ note, onCancel }: { note: string; onCancel: () => void }) {
+  const [secs, setSecs] = useState(0);
+  useEffect(() => { const id = setInterval(() => setSecs(s => s + 1), 1000); return () => clearInterval(id); }, []);
   return (
     <div style={{ position: "absolute", inset: 0, zIndex: 40, overflow: "hidden", background: "#04020c" }}>
       <Starfield warp hue="#b8a6ff" density={1.4} />
@@ -297,7 +313,12 @@ function Resolving({ note }: { note: string }) {
       }}>
         <div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", boxShadow: "0 0 40px 14px #b8a6ff, 0 0 120px 40px #b8a6ff", animation: "aurabreath 1.4s ease-in-out infinite" }} />
         <div style={{ color: "rgba(255,255,255,0.6)", fontFamily: "var(--mono)", fontSize: 13, letterSpacing: "0.3em", animation: "fadepulse 1.4s ease-in-out infinite" }}>{note.toUpperCase()}</div>
-        <div style={{ color: "rgba(255,255,255,0.3)", fontFamily: "var(--mono)", fontSize: 11 }}>the matchmaker swaps within ~1–2 slots · this is a real on-chain swap</div>
+        <div style={{ color: "rgba(255,255,255,0.3)", fontFamily: "var(--mono)", fontSize: 11 }}>the matchmaker swaps within ~1–2 slots · real on-chain swap · {secs}s</div>
+        <button onClick={onCancel} style={{
+          marginTop: 18, padding: "9px 20px", borderRadius: 10, cursor: "pointer",
+          background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.16)",
+          color: "rgba(255,255,255,0.75)", fontWeight: 700, fontSize: 13, fontFamily: "inherit",
+        }}>← Back to banner</button>
       </div>
     </div>
   );

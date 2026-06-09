@@ -78,8 +78,10 @@ export function startHealthServer(): void {
 
     if (url === "/stats") {
       const jp = _jackpot?.snapshot() ?? null;
+      const poolOwners = _pool ? new Set(_pool.getAll().map(e => e.owner.toBase58())).size : 0;
       json(res, 200, {
         poolSize: _pool?.size ?? 0,
+        poolOwners,
         totalSwaps: _history?.totalSwaps ?? 0,
         totalRolls: _ledger?.totalRolls ?? 0,
         totalRollers: _ledger?.totalRollers ?? 0,

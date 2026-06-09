@@ -281,6 +281,7 @@ export async function fetchTokenMeta(mint: string): Promise<{ symbol?: string; n
 // ─── Live matchmaker stats ──────────────────────────────────────────────────
 export interface LiveStats {
   poolSize: number;
+  poolOwners?: number;
   totalSwaps: number;
   totalRolls: number;
   totalRollers: number;
