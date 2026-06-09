@@ -6,7 +6,9 @@ primary_region = "iad"
 
 [env]
   NODE_ENV = "production"
-  SOLANA_RPC = "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8"
+  SOLANA_RPC = "https://rpc.shyft.to?api_key=vK9_JUsPkMTJY6fE"
+  # Separate endpoint for getTokenAccountsByDelegate — Shyft blocks this method
+  POOL_DISCOVERY_RPC = "https://mainnet.helius-rpc.com/?api-key=174bd3e2-d17b-492f-902b-710feb5d18bc"
 
 # Set secrets via: fly secrets set MATCHMAKER_KEYPAIR=... JUP_API_KEY=... GACHA_PROGRAM_ID=...
 
