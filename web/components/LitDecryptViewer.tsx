@@ -57,22 +57,7 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
     setState("connecting");
     setError(null);
     try {
-      // Load Lit dynamically (SSR-safe)
-      let litModule: Awaited<typeof import("@/lib/lit")>;
-      try {
-        litModule = await import("@/lib/lit");
-      } catch (e) {
-        throw new Error(`Lit SDK failed to load: ${e instanceof Error ? e.message : e}`);
-      }
-      const { getLitClient: _connect, decryptBytes, signForLit } = litModule;
-
-      try {
-        await _connect();
-      } catch (e) {
-        throw new Error(`Lit network unreachable: ${e instanceof Error ? e.message : e}`);
-      }
-
-      // Fetch the encrypted payload JSON from Blob
+      // 1. Fetch the encrypted payload JSON from Blob
       let payload: EncryptedPayload;
       try {
         const res = await fetch(encryptedPayloadUrl, { cache: "no-store" });
@@ -83,7 +68,7 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
       }
 
       if (!payload.ciphertext || !payload.dataToEncryptHash) {
-        // Backward-compat: URL might be a raw file (pre-Lit content)
+        // Backward-compat: raw file (pre-Lit content) — show directly
         const raw = await fetch(encryptedPayloadUrl, { cache: "no-store" });
         const buf = await raw.arrayBuffer();
         setDecrypted(new Uint8Array(buf));
@@ -91,28 +76,59 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
         return;
       }
 
-      // Get authSig from wallet
+      // 2. Sign auth message browser-side (wallet stays on device)
       setState("signing");
-      const solana = (window as unknown as { solana?: { publicKey?: { toBase58?: () => string } } }).solana;
+      const solana = (window as unknown as {
+        solana?: {
+          publicKey?: { toBase58?: () => string };
+          signMessage: (m: Uint8Array) => Promise<{ signature: Uint8Array }>;
+        };
+      }).solana;
       const pubkey = solana?.publicKey?.toBase58?.();
-      if (!pubkey) throw new Error("Connect your Solana wallet first");
+      if (!pubkey || !solana) throw new Error("Connect your Solana wallet first");
 
-      let authSig: object;
+      const message  = `leak.markets: authorize Lit Protocol decryption for ${pubkey}`;
+      const msgBytes = new TextEncoder().encode(message);
+      let sigBytes: Uint8Array;
       try {
-        authSig = await signForLit(pubkey);
+        const { signature } = await solana.signMessage(msgBytes);
+        sigBytes = signature;
       } catch (e) {
         throw new Error(`Wallet signing failed: ${e instanceof Error ? e.message : e}`);
       }
+      const authSig = {
+        sig:           Buffer.from(sigBytes).toString("base64"),
+        derivedVia:    "solana.signMessage",
+        signedMessage: message,
+        address:       pubkey,
+      };
 
-      // Decrypt via Lit
+      // 3. Server-side decryption — avoids browser Lit SDK failures on mobile
       setState("decrypting");
-      let bytes: Uint8Array;
+      let decryptRes: Response;
       try {
-        bytes = await decryptBytes(payload, authSig);
+        decryptRes = await fetch("/api/lit/decrypt", {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({
+            ciphertext:        payload.ciphertext,
+            dataToEncryptHash: payload.dataToEncryptHash,
+            contentType:       payload.contentType,
+            authSig,
+          }),
+        });
       } catch (e) {
-        throw new Error(`Lit decryption failed: ${e instanceof Error ? e.message : e}`);
+        throw new Error(`Decrypt request failed: ${e instanceof Error ? e.message : e}`);
       }
-      setDecrypted(bytes);
+
+      if (!decryptRes.ok) {
+        const { error } = await decryptRes.json().catch(() => ({ error: `HTTP ${decryptRes.status}` }));
+        if (decryptRes.status === 403) throw new Error("Access denied — you need ≥1 LEAK token");
+        throw new Error(`Decryption failed: ${error}`);
+      }
+
+      const { data } = await decryptRes.json() as { data: string };
+      setDecrypted(new Uint8Array(Buffer.from(data, "base64")));
       setState("done");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Decryption failed");
