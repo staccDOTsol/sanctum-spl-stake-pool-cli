@@ -5,7 +5,8 @@
 import type { CSSProperties } from "react";
 import {
   POOL, RARITIES, PITY_HARD, PITY_SOFT, PROTOCOL_GENESIS_ROLLS,
-  Theme, LiveStats, sweepByThreshold, earlyPointsFor, fmtUsd, fmtPts,
+  Theme, LiveStats, sweepByThreshold, earlyPointsFor, ticketsForStreak,
+  fmtUsd, fmtPts, fmtSol,
 } from "@/lib/gacha/data";
 import { RarityCoin, SparkleRain } from "./Fx";
 
@@ -34,13 +35,15 @@ export function OddsBar() {
   );
 }
 
-export function Banner({ approved, pity, globalRolls, earlyBank, divBank, earliness, sweptUsd, threshold, live, onRoll, onApprove, onHistory }: {
+export function Banner({ approved, pity, globalRolls, earlyBank, divBank, streak, jackpotSol, earliness, sweptUsd, threshold, live, onRoll, onApprove, onHistory }: {
   theme?: Theme;
   approved: boolean;
   pity: number;
   globalRolls: number;
   earlyBank: number;
   divBank: number;
+  streak: number;
+  jackpotSol: number;
   earliness: number;
   sweptUsd: number;
   threshold: number;
@@ -55,6 +58,8 @@ export function Banner({ approved, pity, globalRolls, earlyBank, divBank, earlin
   const rollIndex = globalRolls - PROTOCOL_GENESIS_ROLLS;
   const nextMint = earlyPointsFor(rollIndex + 1);
   const rollFee = live?.minRollFeeSol ?? 0.003;
+  const tickets = ticketsForStreak(streak);
+  const jackpotOdds = live?.jackpotOddsPerTicket || 1000;
 
   return (
     <div style={{ maxWidth: 1080, margin: "0 auto", padding: "22px 22px 50px" }}>
@@ -108,6 +113,37 @@ export function Banner({ approved, pity, globalRolls, earlyBank, divBank, earlin
             <div style={{ fontSize: 12, fontFamily: "var(--mono)", color: "#7CFFB2", marginTop: 6 }}>
               100% gacha · no house edge — the edge pays it forward
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* PROGRESSIVE JACKPOT + PARLAY strip */}
+      <div style={{
+        position: "relative", overflow: "hidden", borderRadius: 18, marginBottom: 12,
+        padding: "18px 22px", display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap",
+        background: "radial-gradient(120% 140% at 0% 0%, rgba(255,203,69,0.16), rgba(255,255,255,0.03))",
+        border: "1px solid rgba(255,203,69,0.3)", boxShadow: "0 0 40px rgba(255,203,69,0.1)",
+      }}>
+        <SparkleRain accent="#ffcb45" count={14} />
+        <div style={{ position: "relative" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 22 }}>🎰</span>
+            <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.2em", color: "#ffcb45", fontFamily: "var(--mono)" }}>PROGRESSIVE JACKPOT</span>
+          </div>
+          <div style={{ fontSize: "clamp(28px, 5vw, 40px)", fontWeight: 900, color: "#ffe27d", fontFamily: "var(--mono)", textShadow: "0 0 28px rgba(255,203,69,0.5)", lineHeight: 1.1, marginTop: 4 }}>
+            {fmtSol(jackpotSol)}
+          </div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", fontFamily: "var(--mono)", marginTop: 2 }}>
+            paid to one roller · 1-in-{jackpotOdds.toLocaleString("en-US")} per ticket · provably fair
+          </div>
+        </div>
+        <div style={{ position: "relative", marginLeft: "auto", textAlign: "right" }}>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", fontFamily: "var(--mono)", letterSpacing: "0.14em" }}>WIN STREAK · PARLAY</div>
+          <div style={{ fontSize: 26, fontWeight: 900, color: streak > 0 ? "#7CFFB2" : "rgba(255,255,255,0.5)", fontFamily: "var(--mono)", lineHeight: 1.2 }}>
+            {streak > 0 ? `${streak}🔥` : "—"}
+          </div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", fontFamily: "var(--mono)" }}>
+            next wish draws <span style={{ color: "#ffcb45", fontWeight: 700 }}>{tickets}🎟</span>
           </div>
         </div>
       </div>
@@ -183,6 +219,15 @@ export function Banner({ approved, pity, globalRolls, earlyBank, divBank, earlin
             <div style={{ fontSize: 12, fontFamily: "var(--mono)", color: "rgba(255,255,255,0.8)", marginTop: 3 }}>{+(rollFee * 10).toFixed(4)} ◎ roll fee</div>
           </button>
         </div>
+      </div>
+
+      <div style={{
+        textAlign: "center", margin: "0 auto 14px", maxWidth: 560,
+        padding: "8px 16px", borderRadius: 999,
+        background: "rgba(124,255,178,0.07)", border: "1px solid rgba(124,255,178,0.2)",
+        fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", color: "#7CFFB2",
+      }}>
+        This site will never have a meme coin.
       </div>
 
       <div style={{ textAlign: "center", fontSize: 11, color: "rgba(255,255,255,0.3)", fontFamily: "var(--mono)", lineHeight: 1.6 }}>

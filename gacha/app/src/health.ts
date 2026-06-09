@@ -3,11 +3,13 @@ import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import type { DividendLedger } from "./dividend.js";
 import type { SwapHistory } from "./history.js";
 import type { GachaPool } from "./pool.js";
+import type { JackpotPot } from "./jackpot.js";
 import { PITY_HARD, PITY_SOFT } from "./history.js";
 
 let _ledger: DividendLedger | null = null;
 let _history: SwapHistory | null = null;
 let _pool: GachaPool | null = null;
+let _jackpot: JackpotPot | null = null;
 
 export function registerLedger(l: DividendLedger): void {
   _ledger = l;
@@ -19,6 +21,10 @@ export function registerHistory(h: SwapHistory): void {
 
 export function registerPool(p: GachaPool): void {
   _pool = p;
+}
+
+export function registerJackpot(j: JackpotPot): void {
+  _jackpot = j;
 }
 
 function json(res: ServerResponse, code: number, body: unknown): void {
@@ -42,6 +48,7 @@ export function startHealthServer(): void {
     }
 
     if (url === "/stats") {
+      const jp = _jackpot?.snapshot() ?? null;
       json(res, 200, {
         poolSize: _pool?.size ?? 0,
         totalSwaps: _history?.totalSwaps ?? 0,
@@ -51,8 +58,16 @@ export function startHealthServer(): void {
         rentPerSwapSol: 0.00408,
         pityHard: PITY_HARD,
         pitySoft: PITY_SOFT,
+        jackpotSol: jp?.balanceSol ?? 0,
+        jackpotOddsPerTicket: jp?.oddsPerTicket ?? 0,
         matchmaker: process.env.MATCHMAKER_PUBKEY ?? null,
       });
+      return;
+    }
+
+    if (url === "/jackpot") {
+      if (!_jackpot) { json(res, 503, { error: "matchmaker not running" }); return; }
+      json(res, 200, _jackpot.snapshot());
       return;
     }
 
@@ -79,6 +94,8 @@ export function startHealthServer(): void {
         pityHard: PITY_HARD,
         pitySoft: PITY_SOFT,
         guaranteed: _history.pityActive(pityMatch[1]),
+        streak: _history.streakOf(pityMatch[1]),
+        jackpotTickets: _history.ticketsFor(pityMatch[1]),
       });
       return;
     }

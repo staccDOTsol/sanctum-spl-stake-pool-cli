@@ -29,6 +29,24 @@ export const DIVIDEND_BPS = parseInt(process.env.DIVIDEND_BPS ?? "4000"); // 40%
 export const MIN_PAYOUT_LAMPORTS = parseInt(process.env.MIN_PAYOUT_LAMPORTS ?? "500000"); // 0.0005 SOL
 export const LEDGER_PATH = process.env.DIVIDEND_LEDGER_PATH ?? "./dividend-ledger.json";
 
+/**
+ * Per-rank decay of dividend weight: roller i earns DIVIDEND_DECAY^i of the
+ * weight. The original 0.5 was too steep — roller #10 earned ~1/1000th, so a
+ * whale's annuity NPV could never beat their swap-EV loss and they'd never
+ * seed the pool (adverse selection → market for lemons → pool dies).
+ *
+ * At 0.85 the geometric series sum is 1/(1-0.85) ≈ 6.67 "rolls of fees" of
+ * lifetime entitlement per unit weight, and roller #N's share decays slowly
+ * enough that seeding early is individually rational for high-value holders.
+ * Tune via DIVIDEND_DECAY ∈ (0,1): higher = flatter = more late-roller upside.
+ */
+export const DIVIDEND_DECAY = Math.min(0.999, Math.max(0.01, parseFloat(process.env.DIVIDEND_DECAY ?? "0.85")));
+
+/** Dividend weight for a 0-indexed roller rank. */
+export function dividendWeight(rollIndex: number): number {
+  return Math.pow(DIVIDEND_DECAY, rollIndex);
+}
+
 export interface RollerRecord {
   pubkey: string;
   rollIndex: number;          // 0-indexed position in join order (lower = earlier)
@@ -81,15 +99,15 @@ export class DividendLedger {
     const dividendPool = Math.floor(rollFeeLamports * DIVIDEND_BPS / 10_000);
 
     if (dividendPool > 0 && this.state.rollers.length > 0) {
-      // totalWeight = sum of (0.5)^rollIndex across all existing rollers
+      // totalWeight = sum of DIVIDEND_DECAY^rollIndex across all existing rollers
       let totalWeight = 0;
-      for (const r of this.state.rollers) totalWeight += Math.pow(0.5, r.rollIndex);
+      for (const r of this.state.rollers) totalWeight += dividendWeight(r.rollIndex);
 
       const POINTS_PER_ROLL = 1_000_000;
       let distributed = 0;
 
       for (const r of this.state.rollers) {
-        const share = Math.pow(0.5, r.rollIndex) / totalWeight;
+        const share = dividendWeight(r.rollIndex) / totalWeight;
         const earned = Math.floor(dividendPool * share);
         const pts = Math.floor(POINTS_PER_ROLL * share);
         r.pendingLamports += earned;

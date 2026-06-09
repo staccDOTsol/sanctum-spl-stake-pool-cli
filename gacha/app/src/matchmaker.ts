@@ -34,6 +34,7 @@ import { getSwapBasedUsdValue } from "./jupiter.js";
 import { startHealthServer } from "./health.js";
 import { DividendLedger } from "./dividend.js";
 import { SwapHistory, rarityForMult } from "./history.js";
+import { JackpotPot } from "./jackpot.js";
 import { classifyMint, loadTierLists, TIER_LABEL, TokenTier } from "./tiers.js";
 
 const MIN_ROLL_FEE = parseFloat(process.env.MIN_ROLL_FEE_SOL ?? "0.003") * LAMPORTS_PER_SOL;
@@ -44,6 +45,7 @@ export class Matchmaker {
   private pool: GachaPool;
   private ledger: DividendLedger;
   private history: SwapHistory;
+  private jackpot: JackpotPot;
   private processing = new Set<string>();
   private lastBalance = 0n;
 
@@ -54,11 +56,13 @@ export class Matchmaker {
     this.pool = new GachaPool(connection, keypair.publicKey);
     this.ledger = new DividendLedger();
     this.history = new SwapHistory();
+    this.jackpot = new JackpotPot();
   }
 
   getLedger(): DividendLedger { return this.ledger; }
   getHistory(): SwapHistory { return this.history; }
   getPool(): GachaPool { return this.pool; }
+  getJackpot(): JackpotPot { return this.jackpot; }
 
   async run(): Promise<void> {
     console.log(`[matchmaker] pubkey: ${this.keypair.publicKey.toBase58()}`);
@@ -350,10 +354,41 @@ export class Matchmaker {
     console.log(`  counterparty got: ${reqAcc.amount} of ${reqAcc.mint.toBase58().slice(0,8)} (~$${reqUsd?.toFixed(2)})`);
     console.log(`  entropy slot: ${entropy.entropySlot}, index: ${entropy.randomIndex}/${candidates.length} (${TIER_LABEL[requesterTier]})`);
 
-    // Record the receipt trail — everything needed to re-derive the roll
+    // USD-value-equivalent outcome: multiplier = what the requester's bag did
+    // in USD terms. Streak, jackpot eligibility and rarity all ride on this.
     const multiplier = reqUsd && ctpUsd && reqUsd > 0
       ? Math.round((ctpUsd / reqUsd) * 100) / 100
       : null;
+
+    // ── PROGRESSIVE JACKPOT ──────────────────────────────────────────────────
+    // Rake a slice of this roll's fee into the pot, then draw a provably-fair
+    // trigger off the same slot hash. A hot win-streak buys extra tickets.
+    const streakBefore = this.history.streakOf(sender.toBase58());
+    const tickets = this.history.ticketsFor(sender.toBase58());
+    this.jackpot.contribute(Number(receivedLamports));
+    let jackpotWonLamports = 0;
+    if (this.jackpot.checkHit(entropy.slotHash, sender, tickets)) {
+      const pot = this.jackpot.balance;
+      try {
+        const jpTx = new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey: this.keypair.publicKey,
+            toPubkey: sender,
+            lamports: pot,
+          })
+        );
+        const jpSig = await sendAndConfirmTransaction(this.connection, jpTx, [this.keypair], { commitment: "confirmed" });
+        this.jackpot.settleWin(sender.toBase58(), pot, jpSig);
+        jackpotWonLamports = pot;
+        console.log(`[matchmaker] 🎰 JACKPOT ${(pot / LAMPORTS_PER_SOL).toFixed(6)} SOL → ${sender.toBase58().slice(0, 8)} (${tickets} tickets)`);
+      } catch (err) {
+        // Payout failed — leave the pot intact and accounting untouched
+        console.error("[matchmaker] jackpot payout failed, pot preserved:", err);
+      }
+    }
+    const streakAfter = multiplier !== null && multiplier >= 1 ? streakBefore + 1 : 0;
+
+    // Record the receipt trail — everything needed to re-derive the roll
     this.history.record({
       signature: sig,
       requester: sender.toBase58(),
@@ -373,6 +408,9 @@ export class Matchmaker {
       randomIndex: Number(entropy.randomIndex),
       poolSize: Number(entropy.poolSize),
       pityTriggered,
+      streak: streakAfter,
+      jackpotTickets: tickets,
+      jackpotWonLamports,
       ts: Date.now(),
     });
 

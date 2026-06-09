@@ -272,6 +272,32 @@ export function fmtPts(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+export function fmtSol(n: number): string {
+  if (n >= 1000) return (n / 1000).toFixed(2) + "k ◎";
+  if (n >= 1) return n.toFixed(3) + " ◎";
+  return n.toFixed(4) + " ◎";
+}
+
+// ─── Progressive jackpot (positive-skew dream tail) ─────────────────────────
+// Mirrors gacha/app/src/jackpot.ts: a rake of each roll fee accrues into a pot
+// paid on a rare provably-fair trigger; a win streak buys extra tickets.
+export const JACKPOT_SEED_SOL = 4.2069;
+export const JACKPOT_RAKE = 0.05;        // 5% of the roll fee
+export const JACKPOT_ODDS = 1000;        // 1 in 1000 per ticket
+export const MAX_STREAK_TICKETS = 10;
+
+// Tickets the next roll draws: 1 base + 1 per win past the first, capped.
+export function ticketsForStreak(streak: number): number {
+  return 1 + Math.min(streak, MAX_STREAK_TICKETS);
+}
+
+// Provably-fair-style sim hit: re-derive an independent draw from the slot hash.
+export function jackpotHit(slotHash: string, tickets: number): boolean {
+  // disjoint byte range + domain tag, mirroring the crank's derivation
+  const draw = parseInt(slotHash.slice(16, 24), 16) % JACKPOT_ODDS;
+  return draw < Math.max(1, tickets);
+}
+
 // ─── Themes ──────────────────────────────────────────────────────────────────
 export interface Theme {
   name: string;
@@ -307,5 +333,7 @@ export interface LiveStats {
   rentPerSwapSol: number;
   pityHard: number;
   pitySoft: number;
+  jackpotSol: number;
+  jackpotOddsPerTicket: number;
   matchmaker: string | null;
 }

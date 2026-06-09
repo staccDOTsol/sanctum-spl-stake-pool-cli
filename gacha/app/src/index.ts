@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import "dotenv/config";
-import { startHealthServer, registerLedger, registerHistory, registerPool } from "./health.js";
+import { startHealthServer, registerLedger, registerHistory, registerPool, registerJackpot } from "./health.js";
 import { Command } from "commander";
 import { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { getAccount, getMint } from "@solana/spl-token";
@@ -9,7 +9,7 @@ import { Matchmaker } from "./matchmaker.js";
 import { delegateAta, revokeAta, payToRoll } from "./register.js";
 import { GachaPool } from "./pool.js";
 import { getPrices } from "./jupiter.js";
-import { DividendLedger } from "./dividend.js";
+import { DividendLedger, dividendWeight } from "./dividend.js";
 import { classifyMints, TIER_LABEL } from "./tiers.js";
 
 function loadKeypair(envKey: string): Keypair {
@@ -54,6 +54,7 @@ program
     registerLedger(mm.getLedger());
     registerHistory(mm.getHistory());
     registerPool(mm.getPool());
+    registerJackpot(mm.getJackpot());
     await mm.run();
   });
 
@@ -143,7 +144,9 @@ program
       console.log(`Total rollers: ${ledger.totalRollers}, total rolls: ${ledger.totalRolls}`);
       return;
     }
-    const pctShare = (Math.pow(0.5, stats.rollIndex) / (2 * (1 - Math.pow(0.5, ledger.totalRollers))) * 100);
+    let totalWeight = 0;
+    for (const r of ledger.getLeaderboard()) totalWeight += dividendWeight(r.rollIndex);
+    const pctShare = totalWeight > 0 ? (dividendWeight(stats.rollIndex) / totalWeight * 100) : 0;
     console.log(`\nPubkey:          ${stats.pubkey}`);
     console.log(`Roll number:     #${stats.rollIndex + 1} of ${ledger.totalRollers}`);
     console.log(`Points:          ${stats.cumulativePoints.toLocaleString()}`);
@@ -163,7 +166,7 @@ program
     if (!board.length) { console.log("No rollers yet."); return; }
 
     let totalWeight = 0;
-    for (const r of board) totalWeight += Math.pow(0.5, r.rollIndex);
+    for (const r of board) totalWeight += dividendWeight(r.rollIndex);
 
     console.log(`\nGacha Dividend Leaderboard — ${ledger.totalRolls} total rolls\n`);
     console.log(

@@ -9,6 +9,12 @@ primary_region = "iad"
   SOLANA_RPC = "https://rpc.shyft.to?api_key=vK9_JUsPkMTJY6fE"
   # Separate endpoint for getTokenAccountsByDelegate — Shyft blocks this method
   POOL_DISCOVERY_RPC = "https://mainnet.helius-rpc.com/?api-key=174bd3e2-d17b-492f-902b-710feb5d18bc"
+  # Gacha mechanics
+  MIN_ROLL_FEE_SOL = "0.003"
+  MAX_ROLLS_PER_PAYMENT = "10"   # one payment of N× the fee buys N swaps (10-pull)
+  GACHA_PITY_HARD = "90"         # consecutive losing rolls before the up-only guarantee
+  GACHA_PITY_SOFT = "74"
+  SWAP_HISTORY_PATH = "./swap-history.json"
 
 # Set secrets via: fly secrets set MATCHMAKER_KEYPAIR=... JUP_API_KEY=... GACHA_PROGRAM_ID=...
 
@@ -20,6 +26,11 @@ primary_region = "iad"
   [[services.ports]]
     port = 80
     handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
 
   [[services.tcp_checks]]
     interval = "15s"

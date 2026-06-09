@@ -10,7 +10,9 @@
 import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
   THEMES, STAKE, PROTOCOL_GENESIS_ROLLS, Pull, LiveStats,
+  JACKPOT_SEED_SOL, JACKPOT_RAKE,
   sweepByThreshold, makePull, topRarity, earlinessPct,
+  ticketsForStreak, jackpotHit, fmtSol,
 } from "@/lib/gacha/data";
 import { Starfield, useScreenShake } from "@/components/gacha/Fx";
 import { WishOverlay, RevealCard } from "@/components/gacha/Reveal";
@@ -39,6 +41,9 @@ export default function GachaPage() {
   const [globalRolls, setGlobalRolls] = useState(PROTOCOL_GENESIS_ROLLS);
   const [earlyBank, setEarlyBank] = useState(0);
   const [divBank, setDivBank] = useState(0);
+  const [streak, setStreak] = useState(0);
+  const [jackpotSol, setJackpotSol] = useState(JACKPOT_SEED_SOL);
+  const [jackpotWin, setJackpotWin] = useState(0);
   const [history, setHistory] = useState<Pull[]>([]);
 
   const [pulls, setPulls] = useState<Pull[]>([]);
@@ -54,6 +59,8 @@ export default function GachaPage() {
     setGlobalRolls(+(localStorage.getItem("sw_global") || PROTOCOL_GENESIS_ROLLS));
     setEarlyBank(+(localStorage.getItem("sw_early") || 0));
     setDivBank(+(localStorage.getItem("sw_div") || 0));
+    setStreak(+(localStorage.getItem("sw_streak") || 0));
+    setJackpotSol(+(localStorage.getItem("sw_jackpot") || JACKPOT_SEED_SOL));
     try { setHistory(JSON.parse(localStorage.getItem("sw_hist") || "[]")); } catch { /* keep [] */ }
     setMounted(true);
     document.body.classList.add("gacha-mode");
@@ -64,6 +71,8 @@ export default function GachaPage() {
   useEffect(() => { if (mounted) localStorage.setItem("sw_global", String(globalRolls)); }, [globalRolls, mounted]);
   useEffect(() => { if (mounted) localStorage.setItem("sw_early", String(earlyBank)); }, [earlyBank, mounted]);
   useEffect(() => { if (mounted) localStorage.setItem("sw_div", String(divBank)); }, [divBank, mounted]);
+  useEffect(() => { if (mounted) localStorage.setItem("sw_streak", String(streak)); }, [streak, mounted]);
+  useEffect(() => { if (mounted) localStorage.setItem("sw_jackpot", String(jackpotSol)); }, [jackpotSol, mounted]);
   useEffect(() => { if (mounted) localStorage.setItem("sw_hist", JSON.stringify(history.slice(0, 60))); }, [history, mounted]);
 
   // Live matchmaker stats (graceful: stays null when the crank is unreachable)
@@ -107,9 +116,25 @@ export default function GachaPage() {
     }
     setEarlyBank(b => b + pulls.reduce((s, p) => s + p.earlyPts, 0));
     setDivBank(b => b + pulls.reduce((s, p) => s + p.dividend, 0));
+
+    // Streak parlay + progressive jackpot, sequential over the batch.
+    // Each roll rakes a slice of the fee into the pot; a win streak buys extra
+    // tickets; a provably-fair draw off the slot hash can take the whole pot.
+    const rollFee = live?.minRollFeeSol ?? 0.003;
+    let s = streak, pot = jackpotSol, won = 0;
+    for (const p of pulls) {
+      pot += rollFee * JACKPOT_RAKE;
+      const tickets = ticketsForStreak(s);
+      if (jackpotHit(p.slotHash, tickets)) { won = pot; pot = JACKPOT_SEED_SOL; }
+      s = p.isWin ? s + 1 : 0;
+    }
+    setStreak(s);
+    setJackpotSol(pot);
+    if (won > 0) { setJackpotWin(won); if (SCREEN_SHAKE) shake(2); }
+
     setHistory(h => [...pulls].reverse().concat(h));
     setStage(isMulti ? "summary" : "reveal");
-  }, [pulls, isMulti, shake]);
+  }, [pulls, isMulti, shake, streak, jackpotSol, live]);
 
   const reset = () => { setStage("banner"); setPulls([]); };
 
@@ -148,6 +173,7 @@ export default function GachaPage() {
           <Banner
             approved={approved} pity={pity}
             globalRolls={globalRolls} earlyBank={earlyBank} divBank={divBank}
+            streak={streak} jackpotSol={live?.jackpotSol || jackpotSol}
             earliness={earliness} sweptUsd={sweptUsd} threshold={threshold} live={live}
             onRoll={doRoll} onApprove={() => setShowApproval(true)} onHistory={() => setShowHistory(true)}
           />
@@ -179,8 +205,37 @@ export default function GachaPage() {
           onClose={() => setShowApproval(false)} />
       )}
       {receipt && <Receipt pull={receipt} onClose={() => setReceipt(null)} />}
+      {jackpotWin > 0 && <JackpotWin amountSol={jackpotWin} onClose={() => setJackpotWin(0)} />}
       <HistoryDrawer open={showHistory} history={history} onClose={() => setShowHistory(false)}
         onReceipt={(p) => { setShowHistory(false); setReceipt(p); }} />
+    </div>
+  );
+}
+
+function JackpotWin({ amountSol, onClose }: { amountSol: number; onClose: () => void }) {
+  return (
+    <div onClick={onClose} style={{
+      position: "absolute", inset: 0, zIndex: 65, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center",
+      background: "radial-gradient(circle at 50% 40%, rgba(255,203,69,0.22), rgba(4,2,12,0.92))",
+      backdropFilter: "blur(6px)", animation: "fadein .25s ease",
+    }}>
+      <div style={{ fontSize: 64, animation: "aurabreath 1.6s ease-in-out infinite" }}>🎰</div>
+      <div style={{ fontSize: 13, letterSpacing: "0.4em", color: "#ffcb45", fontFamily: "var(--mono)", fontWeight: 800, marginTop: 8 }}>
+        PROGRESSIVE JACKPOT
+      </div>
+      <div style={{
+        fontSize: "clamp(40px, 9vw, 84px)", fontWeight: 900, lineHeight: 1, marginTop: 8,
+        color: "#ffe27d", fontFamily: "var(--mono)", textShadow: "0 0 40px rgba(255,203,69,0.8)",
+      }}>{fmtSol(amountSol)}</div>
+      <div style={{ marginTop: 14, fontSize: 14, color: "rgba(255,255,255,0.6)" }}>
+        The whole pot, paid to your wallet. Provably fair off the same slot hash.
+      </div>
+      <button onClick={onClose} style={{
+        marginTop: 26, padding: "12px 28px", borderRadius: 12, border: "none", cursor: "pointer",
+        background: "linear-gradient(90deg,#ffcb45,#ff8a3d)", color: "#1a0f02", fontWeight: 800, fontSize: 15,
+        boxShadow: "0 10px 34px rgba(255,203,69,0.45)",
+      }}>Claim & keep wishing</button>
     </div>
   );
 }
