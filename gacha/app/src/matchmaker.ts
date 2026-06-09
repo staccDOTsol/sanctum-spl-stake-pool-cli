@@ -185,48 +185,52 @@ export class Matchmaker {
       return;
     }
 
-    // Pick the highest-value ATA from the sender
-    const requester = await this.pickHighestValueEntry(senderEntries);
+    // ROLL-FOR-ROLL value matching. Price the sender's bags AND the pool in one
+    // batch, then pick the sender bag that actually HAS an in-band counterparty
+    // (preferring the highest-value such bag) — instead of stubbornly rolling the
+    // top bag, which may have no match. VALUE_BAND× cap keeps it anti-drain.
+    const poolMinusSelf = this.pool.getAll().filter(e => !e.owner.equals(sender));
+    const allMints = [...new Set([...senderEntries, ...poolMinusSelf].map(e => e.mint.toBase58()))];
+    const prices = await getPrices(allMints);
+    const valueOf = (e: { mint: PublicKey; uiAmount: number }): number | null => {
+      const p = prices.get(e.mint.toBase58());
+      return p != null ? p * e.uiAmount : null;
+    };
+
+    let requester: typeof senderEntries[number] | null = null;
+    let reqValue: number | null = null;
+    let candidates: ReturnType<GachaPool["getAll"]> = [];
+    const pricedSenderBags = senderEntries
+      .filter(e => valueOf(e) != null)
+      .sort((a, b) => (valueOf(b) ?? 0) - (valueOf(a) ?? 0));
+    for (const e of pricedSenderBags) {
+      const v = valueOf(e) as number;
+      const cands = poolMinusSelf.filter(c => {
+        const cv = valueOf(c);
+        return cv != null && cv >= v / VALUE_BAND && cv <= v * VALUE_BAND;
+      });
+      if (cands.length > 0) { requester = e; reqValue = v; candidates = cands; break; }
+    }
     if (!requester) {
-      console.warn(`[matchmaker] no priceable ATA for ${sender.toBase58()}`);
+      // fallback: unpriceable bag ↔ unpriceable counterparties
+      const unp = senderEntries.find(e => valueOf(e) == null);
+      const unpCands = poolMinusSelf.filter(c => valueOf(c) == null);
+      if (unp && unpCands.length > 0) { requester = unp; reqValue = null; candidates = unpCands; }
+    }
+    if (!requester) {
+      console.warn(
+        `[matchmaker] no value-matched counterparty for ${sender.toBase58().slice(0, 8)} ` +
+        `across ${senderEntries.length} bags (within ${VALUE_BAND}×) — waiting for a similar-value bag`
+      );
       return;
     }
 
-    // Classify requester's mint to determine which tier bucket to match within
     const reqAccPrelim = await getAccount(this.connection, requester.ata, undefined, requester.programId);
     if (reqAccPrelim.amount === 0n) {
       console.warn("[matchmaker] requester ATA is empty, skipping");
       return;
     }
     const requesterTier = await classifyMint(reqAccPrelim.mint.toBase58(), this.connection);
-
-    // ROLL-FOR-ROLL value matching: match only counterparties whose USD value is
-    // within VALUE_BAND× of the rolled bag, so a worthless coin can't take a
-    // valuable one. (Replaces token-provenance tiers.)
-    const poolMinusSelf = this.pool.getAll().filter(e => !e.owner.equals(sender));
-    const mintSet = [...new Set([reqAccPrelim.mint.toBase58(), ...poolMinusSelf.map(e => e.mint.toBase58())])];
-    const prices = await getPrices(mintSet);
-    const valueOf = (mint: string, uiAmount: number): number | null => {
-      const p = prices.get(mint);
-      return p != null ? p * uiAmount : null;
-    };
-    const reqUiAmount = Number(reqAccPrelim.amount) / Math.pow(10, requester.decimals);
-    const reqValue = valueOf(reqAccPrelim.mint.toBase58(), reqUiAmount);
-
-    let candidates = poolMinusSelf.filter(e => {
-      const v = valueOf(e.mint.toBase58(), e.uiAmount);
-      if (reqValue == null) return v == null;        // unpriceable ↔ unpriceable
-      if (v == null) return false;
-      return v >= reqValue / VALUE_BAND && v <= reqValue * VALUE_BAND;
-    });
-
-    if (candidates.length === 0) {
-      console.warn(
-        `[matchmaker] no value-matched counterparty for ${sender.toBase58().slice(0, 8)} ` +
-        `($${reqValue?.toFixed(2) ?? "?"} within ${VALUE_BAND}×) — waiting for a similar-value bag`
-      );
-      return;
-    }
 
     // Hard pity: after PITY_HARD consecutive losing rolls the candidate set is
     // restricted to counterparties worth at least the requester's bag — a
