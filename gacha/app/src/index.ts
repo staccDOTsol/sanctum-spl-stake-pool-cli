@@ -45,7 +45,26 @@ program
   .command("matchmaker")
   .description("Run the matchmaker service")
   .action(async () => {
+    // Health server starts immediately so Fly's TCP check passes
+    // even before secrets are fully configured.
     startHealthServer();
+
+    const missingSecrets: string[] = [];
+    if (!process.env.MATCHMAKER_KEYPAIR) missingSecrets.push("MATCHMAKER_KEYPAIR");
+    if (!process.env.GACHA_PROGRAM_ID)   missingSecrets.push("GACHA_PROGRAM_ID");
+
+    if (missingSecrets.length > 0) {
+      console.error(
+        `[matchmaker] missing required secrets: ${missingSecrets.join(", ")}\n` +
+        `Set them with:\n` +
+        missingSecrets.map(s => `  fly secrets set ${s}=<value> -a gacha-matchmaker`).join("\n") +
+        `\nProcess will stay alive for health checks but will not match until secrets are set.`
+      );
+      // Keep process alive (health server is running); exit only if a signal arrives.
+      await new Promise(() => {});
+      return;
+    }
+
     const keypair = loadKeypair("MATCHMAKER_KEYPAIR");
     const connection = getConnection();
     const mm = new Matchmaker(connection, keypair);
