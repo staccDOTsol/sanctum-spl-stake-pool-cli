@@ -419,8 +419,9 @@ export class Matchmaker {
       ts: Date.now(),
     });
 
-    // Distribute dividend share of roll fee to previous rollers, then register sender
-    this.ledger.allocate(sender.toBase58(), Number(receivedLamports));
+    // Distribute dividend share of roll fee to previous rollers, then register
+    // sender. Points accrue ∝ USD risked (their bag value) × earliness.
+    this.ledger.allocate(sender.toBase58(), Number(receivedLamports), reqUsd ?? 0);
     // Fire-and-forget payout — failures accumulate and retry next roll
     this.ledger.payPendingDividends(this.connection, this.keypair).catch(console.error);
 

@@ -9,7 +9,7 @@ import { Matchmaker } from "./matchmaker.js";
 import { delegateAta, revokeAta, payToRoll } from "./register.js";
 import { GachaPool } from "./pool.js";
 import { getPrices } from "./jupiter.js";
-import { DividendLedger, dividendWeight } from "./dividend.js";
+import { DividendLedger } from "./dividend.js";
 import { classifyMints, TIER_LABEL } from "./tiers.js";
 
 function loadKeypair(envKey: string): Keypair {
@@ -144,9 +144,9 @@ program
       console.log(`Total rollers: ${ledger.totalRollers}, total rolls: ${ledger.totalRolls}`);
       return;
     }
-    let totalWeight = 0;
-    for (const r of ledger.getLeaderboard()) totalWeight += dividendWeight(r.rollIndex);
-    const pctShare = totalWeight > 0 ? (dividendWeight(stats.rollIndex) / totalWeight * 100) : 0;
+    let totalPoints = 0;
+    for (const r of ledger.getLeaderboard()) totalPoints += r.cumulativePoints;
+    const pctShare = totalPoints > 0 ? (stats.cumulativePoints / totalPoints * 100) : 0;
     console.log(`\nPubkey:          ${stats.pubkey}`);
     console.log(`Roll number:     #${stats.rollIndex + 1} of ${ledger.totalRollers}`);
     console.log(`Points:          ${stats.cumulativePoints.toLocaleString()}`);
@@ -165,8 +165,8 @@ program
     const board = ledger.getLeaderboard();
     if (!board.length) { console.log("No rollers yet."); return; }
 
-    let totalWeight = 0;
-    for (const r of board) totalWeight += dividendWeight(r.rollIndex);
+    let totalPoints = 0;
+    for (const r of board) totalPoints += r.cumulativePoints;
 
     console.log(`\nGacha Dividend Leaderboard — ${ledger.totalRolls} total rolls\n`);
     console.log(
@@ -175,7 +175,7 @@ program
     );
     console.log("─".repeat(100));
     for (const r of board) {
-      const share = (Math.pow(0.5, r.rollIndex) / totalWeight * 100).toFixed(2);
+      const share = (totalPoints > 0 ? r.cumulativePoints / totalPoints * 100 : 0).toFixed(2);
       console.log(
         `${String(r.rollIndex + 1).padEnd(4)} ${r.pubkey.padEnd(44)} ${(share + "%").padEnd(8)} ` +
         `${r.cumulativePoints.toLocaleString().padEnd(12)} ` +

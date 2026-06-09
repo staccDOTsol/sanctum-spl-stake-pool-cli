@@ -167,7 +167,7 @@ export function Banner({
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 18 }}>
         <StatCard label="YOUR ROLLS" value={points ? `#${points.rollNumber}` : "—"} accent="#b06bff" sub={points ? `of ${points.totalRollers.toLocaleString("en-US")} rollers · earlier earns more` : "roll to join the dividend ledger"} />
         <StatCard label="DIVIDENDS EARNED" value={points ? fmtSol(points.totalEarnedSol) : "0 ◎"} accent="#7CFFB2" sub={points && points.pendingSol > 0 ? `${fmtSol(points.pendingSol)} pending` : "paid by rollers after you"} />
-        <StatCard label="DIVIDEND POINTS" value={points ? points.cumulativePoints.toLocaleString("en-US") : "0"} accent="#ffcb45" sub="exponential weight by join order" />
+        <StatCard label="DIVIDEND POINTS" value={points ? points.cumulativePoints.toLocaleString("en-US") : "0"} accent="#ffcb45" sub="USD risked × earliness — your slice of every future roll" />
       </div>
 
       {/* main play card */}

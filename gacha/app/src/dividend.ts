@@ -42,10 +42,13 @@ export const LEDGER_PATH = process.env.DIVIDEND_LEDGER_PATH ?? "./dividend-ledge
  */
 export const DIVIDEND_DECAY = Math.min(0.999, Math.max(0.01, parseFloat(process.env.DIVIDEND_DECAY ?? "0.85")));
 
-/** Dividend weight for a 0-indexed roller rank. */
+/** Earliness multiplier for a 0-indexed roller rank (1 at rank 0, decaying). */
 export function dividendWeight(rollIndex: number): number {
   return Math.pow(DIVIDEND_DECAY, rollIndex);
 }
+
+/** Scale so points read as whole numbers (~USD × earliness × this). */
+export const POINTS_SCALE = 1000;
 
 export interface RollerRecord {
   pubkey: string;
@@ -91,40 +94,40 @@ export class DividendLedger {
   }
 
   /**
-   * Distribute dividends from this roll to all EXISTING rollers,
-   * then register rollerPubkey if they're new.
-   * Must be called AFTER the swap confirms.
+   * Distribute this roll's dividend pool to all EXISTING rollers in proportion
+   * to their accumulated POINTS, then accrue points for this roller and register
+   * them if new. Must be called AFTER the swap confirms.
+   *
+   * points accrued per roll = usdNotional × earliness(rollIndex) × POINTS_SCALE.
+   * So risk more + roll earlier = a bigger permanent slice of every future
+   * roll's dividends. This compensates above-average-bag holders for their
+   * negative swap-EV, which is what keeps big bags in the pool (anti-lemons).
    */
-  allocate(rollerPubkey: string, rollFeeLamports: number): void {
+  allocate(rollerPubkey: string, rollFeeLamports: number, usdNotional: number): void {
     const dividendPool = Math.floor(rollFeeLamports * DIVIDEND_BPS / 10_000);
 
-    if (dividendPool > 0 && this.state.rollers.length > 0) {
-      // totalWeight = sum of DIVIDEND_DECAY^rollIndex across all existing rollers
-      let totalWeight = 0;
-      for (const r of this.state.rollers) totalWeight += dividendWeight(r.rollIndex);
-
-      const POINTS_PER_ROLL = 1_000_000;
+    // Distribute to existing rollers (not the current one) by their points.
+    const recipients = this.state.rollers.filter(r => r.pubkey !== rollerPubkey);
+    let totalPoints = 0;
+    for (const r of recipients) totalPoints += r.cumulativePoints;
+    if (dividendPool > 0 && totalPoints > 0) {
       let distributed = 0;
-
-      for (const r of this.state.rollers) {
-        const share = dividendWeight(r.rollIndex) / totalWeight;
-        const earned = Math.floor(dividendPool * share);
-        const pts = Math.floor(POINTS_PER_ROLL * share);
+      for (const r of recipients) {
+        const earned = Math.floor(dividendPool * (r.cumulativePoints / totalPoints));
         r.pendingLamports += earned;
         r.totalEarnedLamports += earned;
-        r.cumulativePoints += pts;
         distributed += earned;
       }
-
       console.log(
-        `[dividend] roll #${this.state.totalRolls + 1}: distributed ${distributed} lamports ` +
-        `(${(distributed / 1e9).toFixed(6)} SOL) across ${this.state.rollers.length} rollers`
+        `[dividend] roll #${this.state.totalRolls + 1}: distributed ${(distributed / 1e9).toFixed(6)} SOL ` +
+        `across ${recipients.length} rollers (by points)`
       );
     }
 
-    // Register new roller AFTER distributing (they don't earn from their own roll)
-    if (!this.byPubkey.has(rollerPubkey)) {
-      const record: RollerRecord = {
+    // Register new roller (they don't earn from their own roll).
+    let rec = this.byPubkey.get(rollerPubkey);
+    if (!rec) {
+      rec = {
         pubkey: rollerPubkey,
         rollIndex: this.state.rollers.length,
         pendingLamports: 0,
@@ -132,10 +135,15 @@ export class DividendLedger {
         totalEarnedLamports: 0,
         cumulativePoints: 0,
       };
-      this.state.rollers.push(record);
-      this.byPubkey.set(rollerPubkey, record);
-      console.log(`[dividend] new roller #${record.rollIndex + 1}: ${rollerPubkey}`);
+      this.state.rollers.push(rec);
+      this.byPubkey.set(rollerPubkey, rec);
+      console.log(`[dividend] new roller #${rec.rollIndex + 1}: ${rollerPubkey}`);
     }
+
+    // Accrue points = USD risked × earliness × scale.
+    const dPoints = Math.round(Math.max(0, usdNotional) * dividendWeight(rec.rollIndex) * POINTS_SCALE);
+    rec.cumulativePoints += dPoints;
+    if (dPoints > 0) console.log(`[dividend] ${rollerPubkey.slice(0, 8)} +${dPoints} pts (risk $${usdNotional.toFixed(2)} × earliness)`);
 
     this.state.totalRolls++;
     this.save();
