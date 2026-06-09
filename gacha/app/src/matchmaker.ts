@@ -1,16 +1,13 @@
 /**
- * Matchmaker: listens for RollRequested events, selects a counterparty using
- * provable slot-hash randomness, prices both ATAs via Jupiter, and executes
- * the swap on-chain.
+ * Offchain matchmaker — pure SPL token crank, no on-chain program.
  *
- * Revenue model (zero house edge):
- *   - Rolling user pays `roll_fee` SOL (covers new ATA rent + matchmaker profit)
- *   - Matchmaker closes both old ATAs → receives ~0.00408 SOL rent each swap
- *   - New ATAs funded via init_if_needed (cost = 0 if already exists)
+ * Detection: watches for SOL transfers TO the matchmaker address.
+ * When a payment arrives, the sender's delegated ATA(s) are looked up
+ * via getProgramAccounts, a counterparty is selected with slot-hash
+ * randomness, and the swap is executed with standard SPL token calls.
  *
- * Odds range:
- *   Users can win 0.86x–10000x their deposited USD value, determined purely by
- *   who else is in the pool at roll time. No odds manipulation by the protocol.
+ * Revenue: matchmaker collects ~0.00408 SOL rent per swap by closing
+ * two old ATAs (it holds close_authority on both).
  */
 
 import {
@@ -19,284 +16,263 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
-  TransactionInstruction,
   sendAndConfirmTransaction,
+  LAMPORTS_PER_SOL,
 } from "@solana/web3.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountIdempotentInstruction,
+  createCloseAccountInstruction,
+  createTransferCheckedInstruction,
+  getAccount,
   getMint,
 } from "@solana/spl-token";
 import { computeEntropy } from "./randomness.js";
 import { GachaPool } from "./pool.js";
 import { getSwapBasedUsdValue } from "./jupiter.js";
-import { RollRequest, SwapResult } from "./types.js";
+import { startHealthServer } from "./health.js";
 
-function getProgramId(): PublicKey {
-  const id = process.env.GACHA_PROGRAM_ID;
-  if (!id) throw new Error("GACHA_PROGRAM_ID env var not set");
-  return new PublicKey(id);
-}
-
-const SLOT_HASHES_SYSVAR = new PublicKey(
-  "SysvarS1otHashes111111111111111111111111111"
-);
-
-const CONFIG_SEED = Buffer.from("config");
-const DELEGATE_SEED = Buffer.from("delegate");
-
-function deriveConfigPda(): PublicKey {
-  return PublicKey.findProgramAddressSync([CONFIG_SEED], getProgramId())[0];
-}
-
-function deriveDelegateEntryPda(owner: PublicKey, ata: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [DELEGATE_SEED, owner.toBuffer(), ata.toBuffer()],
-    getProgramId()
-  )[0];
-}
-
-function deriveAta(owner: PublicKey, mint: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  )[0];
-}
+const MIN_ROLL_FEE = parseFloat(process.env.MIN_ROLL_FEE_SOL ?? "0.003") * LAMPORTS_PER_SOL;
 
 export class Matchmaker {
   private pool: GachaPool;
-  private processing = new Set<string>(); // deduplicate concurrent rolls
+  private processing = new Set<string>();
+  private lastBalance = 0n;
 
   constructor(
     private connection: Connection,
     private keypair: Keypair
   ) {
-    this.pool = new GachaPool(connection);
+    this.pool = new GachaPool(connection, keypair.publicKey);
   }
 
-  /** Start the matchmaker event loop. */
   async run(): Promise<void> {
-    console.log(`[matchmaker] starting, pubkey=${this.keypair.publicKey.toBase58()}`);
+    console.log(`[matchmaker] pubkey: ${this.keypair.publicKey.toBase58()}`);
+    console.log(`[matchmaker] min roll fee: ${MIN_ROLL_FEE / LAMPORTS_PER_SOL} SOL`);
+
     await this.pool.sync();
 
-    // Subscribe to program logs for RollRequested events
-    this.connection.onLogs(getProgramId(), async (logs) => {
-      const roll = parseRollRequestedLog(logs.logs);
-      if (!roll) return;
+    // Watch for incoming SOL transfers
+    this.connection.onAccountChange(
+      this.keypair.publicKey,
+      async (info) => {
+        const newBalance = BigInt(info.lamports);
+        if (newBalance > this.lastBalance) {
+          const received = newBalance - this.lastBalance;
+          if (received >= BigInt(MIN_ROLL_FEE)) {
+            // Find who sent it by scanning recent txs
+            await this.handleIncomingPayment(received);
+          }
+        }
+        this.lastBalance = newBalance;
+      },
+      "confirmed"
+    );
 
-      const key = roll.requesterAta.toBase58();
-      if (this.processing.has(key)) return;
-      this.processing.add(key);
-
-      try {
-        await this.handleRoll(roll);
-      } catch (err) {
-        console.error(`[matchmaker] swap failed for ${key}:`, err);
-      } finally {
-        this.processing.delete(key);
-      }
-    });
+    // Init balance
+    this.lastBalance = BigInt(
+      await this.connection.getBalance(this.keypair.publicKey)
+    );
 
     // Periodic pool resync
     setInterval(() => this.pool.sync().catch(console.error), 30_000);
 
-    console.log("[matchmaker] listening for rolls…");
-    await new Promise(() => {}); // keep alive
+    console.log("[matchmaker] listening for roll payments…");
+    await new Promise(() => {});
   }
 
-  private async handleRoll(roll: RollRequest): Promise<SwapResult> {
-    console.log(
-      `[matchmaker] roll from ${roll.requester.toBase58()} ` +
-        `at slot ${roll.requestSlot}`
+  private async handleIncomingPayment(receivedLamports: bigint): Promise<void> {
+    // Find the sender from the most recent tx to our address
+    const sigs = await this.connection.getSignaturesForAddress(
+      this.keypair.publicKey,
+      { limit: 5 },
+      "confirmed"
     );
+    if (!sigs.length) return;
 
+    const tx = await this.connection.getParsedTransaction(
+      sigs[0].signature,
+      { commitment: "confirmed", maxSupportedTransactionVersion: 0 }
+    );
+    if (!tx) return;
+
+    // Find the sender: a signer other than the matchmaker
+    const sender = tx.transaction.message.accountKeys.find(
+      k => k.signer && !k.pubkey.equals(this.keypair.publicKey)
+    );
+    if (!sender) return;
+
+    const key = sender.pubkey.toBase58();
+    if (this.processing.has(key)) return;
+    this.processing.add(key);
+
+    try {
+      await this.executeRollForSender(sender.pubkey, sigs[0].slot);
+    } catch (err) {
+      console.error(`[matchmaker] roll failed for ${key}:`, err);
+    } finally {
+      this.processing.delete(key);
+    }
+  }
+
+  private async executeRollForSender(
+    sender: PublicKey,
+    requestSlot: number
+  ): Promise<void> {
     await this.pool.syncIfStale();
-    const poolSize = BigInt(this.pool.size);
-    if (poolSize === 0n) throw new Error("pool is empty");
 
-    // Wait for entropy slot (request_slot + 1) and derive selection
-    const entropy = await computeEntropy(
-      this.connection,
-      roll.requestSlot,
-      roll.requester,
-      poolSize
-    );
-
-    const counterparty = this.pool.get(entropy.randomIndex);
-    if (!counterparty) throw new Error("no counterparty at index");
-
-    // Avoid self-match
-    if (counterparty.ata.equals(roll.requesterAta)) {
-      console.warn("[matchmaker] self-match avoided, re-selecting +1");
-      const altIndex = (entropy.randomIndex + 1n) % poolSize;
-      const alt = this.pool.get(altIndex);
-      if (!alt || alt.ata.equals(roll.requesterAta)) {
-        throw new Error("no valid counterparty (pool too small?)");
-      }
-      return this.executeSwap(roll, alt, entropy.entropySlot, altIndex, poolSize);
+    // Find sender's delegated ATAs
+    const senderEntries = this.pool.getByOwner(sender);
+    if (senderEntries.length === 0) {
+      console.warn(`[matchmaker] ${sender.toBase58()} has no delegated ATAs — ignoring payment`);
+      return;
     }
 
-    return this.executeSwap(
-      roll,
-      counterparty,
-      entropy.entropySlot,
-      entropy.randomIndex,
-      poolSize
+    // Pick the highest-value ATA from the sender
+    const requester = await this.pickHighestValueEntry(senderEntries);
+    if (!requester) {
+      console.warn(`[matchmaker] no priceable ATA for ${sender.toBase58()}`);
+      return;
+    }
+
+    // Pool must have someone other than sender
+    const poolExSender = this.pool.getAll().filter(e => !e.owner.equals(sender));
+    if (poolExSender.length === 0) {
+      console.warn("[matchmaker] no counterparty available (pool too small)");
+      return;
+    }
+
+    // Provably fair counterparty selection
+    const entropy = await computeEntropy(
+      this.connection,
+      BigInt(requestSlot),
+      sender,
+      BigInt(poolExSender.length)
     );
-  }
+    const counterparty = poolExSender[Number(entropy.randomIndex)];
 
-  private async executeSwap(
-    roll: RollRequest,
-    counterparty: ReturnType<GachaPool["get"]> & {},
-    entropySlot: bigint,
-    randomIndex: bigint,
-    poolSize: bigint
-  ): Promise<SwapResult> {
-    // Fetch mint decimals for USD pricing
-    const [reqMintInfo, ctpMintInfo] = await Promise.all([
-      getMint(this.connection, counterparty.mint), // requester's mint comes from their ATA
-      getMint(this.connection, counterparty.mint),
+    // Get current token amounts directly from chain
+    const [reqAcc, ctpAcc] = await Promise.all([
+      getAccount(this.connection, requester.ata),
+      getAccount(this.connection, counterparty.ata),
     ]);
 
-    // Get current balances
-    const [reqAtaInfo, ctpAtaInfo] = await Promise.all([
-      this.connection.getTokenAccountBalance(roll.requesterAta),
-      this.connection.getTokenAccountBalance(counterparty.ata),
-    ]);
+    if (reqAcc.amount === 0n || ctpAcc.amount === 0n) {
+      console.warn("[matchmaker] one of the ATAs is empty, skipping");
+      return;
+    }
 
-    const reqAmountRaw = BigInt(reqAtaInfo.value.amount);
-    const ctpAmountRaw = BigInt(ctpAtaInfo.value.amount);
+    const [reqMint, ctpMint] = await Promise.all([
+      getMint(this.connection, reqAcc.mint),
+      getMint(this.connection, ctpAcc.mint),
+    ]);
 
     // USD values for logging
     const [reqUsd, ctpUsd] = await Promise.all([
-      getSwapBasedUsdValue(
-        reqAtaInfo.value.uiAmountString ? counterparty.mint.toBase58() : counterparty.mint.toBase58(),
-        reqAmountRaw,
-        reqAtaInfo.value.decimals
-      ),
-      getSwapBasedUsdValue(
-        counterparty.mint.toBase58(),
-        ctpAmountRaw,
-        ctpAtaInfo.value.decimals
-      ),
+      getSwapBasedUsdValue(reqAcc.mint.toBase58(), reqAcc.amount, reqMint.decimals),
+      getSwapBasedUsdValue(ctpAcc.mint.toBase58(), ctpAcc.amount, ctpMint.decimals),
     ]);
-
     console.log(
-      `[matchmaker] swap: requester $${reqUsd?.toFixed(2) ?? "?"} ` +
-        `↔ counterparty $${ctpUsd?.toFixed(2) ?? "?"}`
+      `[matchmaker] THE SWITCHEROO: ` +
+      `${sender.toBase58().slice(0,8)} ($${reqUsd?.toFixed(2) ?? "?"} ${reqAcc.mint.toBase58().slice(0,8)}) ` +
+      `↔ ${counterparty.owner.toBase58().slice(0,8)} ($${ctpUsd?.toFixed(2) ?? "?"} ${ctpAcc.mint.toBase58().slice(0,8)})`
     );
 
-    // Derive all needed pubkeys
-    const config = deriveConfigPda();
-    const requesterEntry = deriveDelegateEntryPda(roll.requester, roll.requesterAta);
-    const counterpartyEntry = deriveDelegateEntryPda(counterparty.owner, counterparty.ata);
-
-    // Fetch mint pubkeys from ATAs
-    const reqMint = new PublicKey(reqAtaInfo.value.uiAmount !== null
-      ? (await this.connection.getAccountInfo(roll.requesterAta))!.owner
-      : SystemProgram.programId
+    // Derive new ATAs
+    const [requesterNewAta] = PublicKey.findProgramAddressSync(
+      [sender.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), ctpAcc.mint.toBuffer()],
+      ASSOCIATED_TOKEN_PROGRAM_ID
     );
-    // Proper mint derivation: read from token account
-    const reqAcc = await this.connection.getParsedAccountInfo(roll.requesterAta);
-    const ctpAcc = await this.connection.getParsedAccountInfo(counterparty.ata);
-
-    const requesterMint = new PublicKey(
-      (reqAcc.value?.data as any).parsed.info.mint
-    );
-    const counterpartyMint = new PublicKey(
-      (ctpAcc.value?.data as any).parsed.info.mint
+    const [counterpartyNewAta] = PublicKey.findProgramAddressSync(
+      [counterparty.owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), reqAcc.mint.toBuffer()],
+      ASSOCIATED_TOKEN_PROGRAM_ID
     );
 
-    // New ATAs (may already exist — init_if_needed handles it on-chain)
-    const requesterNewAta = deriveAta(roll.requester, counterpartyMint);
-    const counterpartyNewAta = deriveAta(counterparty.owner, requesterMint);
+    const tx = new Transaction();
 
-    // Build execute_swap instruction
-    // Instruction discriminator: sha256("global:execute_swap")[0..8]
-    const disc = Buffer.from([0x32, 0x5b, 0x06, 0x95, 0x41, 0x6a, 0x37, 0x6e]);
-    const data = Buffer.alloc(8 + 8 + 8 + 8);
-    disc.copy(data, 0);
-    data.writeBigUInt64LE(entropySlot, 8);
-    data.writeBigUInt64LE(poolSize, 16);
-    data.writeBigUInt64LE(randomIndex, 24);
+    // Create new ATAs (idempotent — no-op if they already exist)
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        this.keypair.publicKey, // payer
+        requesterNewAta,
+        sender,
+        ctpAcc.mint
+      ),
+      createAssociatedTokenAccountIdempotentInstruction(
+        this.keypair.publicKey,
+        counterpartyNewAta,
+        counterparty.owner,
+        reqAcc.mint
+      )
+    );
 
-    const ix = new TransactionInstruction({
-      programId: getProgramId(),
-      keys: [
-        { pubkey: this.keypair.publicKey, isSigner: true, isWritable: true },
-        { pubkey: config, isSigner: false, isWritable: true },
-        { pubkey: roll.requester, isSigner: false, isWritable: false },
-        { pubkey: counterparty.owner, isSigner: false, isWritable: false },
-        { pubkey: roll.requesterAta, isSigner: false, isWritable: true },
-        { pubkey: counterparty.ata, isSigner: false, isWritable: true },
-        { pubkey: requesterEntry, isSigner: false, isWritable: true },
-        { pubkey: counterpartyEntry, isSigner: false, isWritable: true },
-        { pubkey: requesterNewAta, isSigner: false, isWritable: true },
-        { pubkey: counterpartyNewAta, isSigner: false, isWritable: true },
-        { pubkey: requesterMint, isSigner: false, isWritable: false },
-        { pubkey: counterpartyMint, isSigner: false, isWritable: false },
-        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        { pubkey: SLOT_HASHES_SYSVAR, isSigner: false, isWritable: false },
-      ],
-      data,
-    });
+    // THE SWITCHEROO: swap all tokens
+    tx.add(
+      createTransferCheckedInstruction(
+        requester.ata,         // from
+        reqAcc.mint,
+        requesterNewAta,       // to  (counterparty's token → sender's new ATA)  wait—
+        this.keypair.publicKey, // authority (delegate)
+        reqAcc.amount,
+        reqMint.decimals
+      ),
+      createTransferCheckedInstruction(
+        counterparty.ata,      // from
+        ctpAcc.mint,
+        counterpartyNewAta,    // to
+        this.keypair.publicKey,
+        ctpAcc.amount,
+        ctpMint.decimals
+      )
+    );
 
-    const tx = new Transaction().add(ix);
-    const signature = await sendAndConfirmTransaction(
+    // Close old ATAs → rent to matchmaker
+    tx.add(
+      createCloseAccountInstruction(
+        requester.ata,
+        this.keypair.publicKey, // destination: us
+        this.keypair.publicKey  // authority: close_authority we hold
+      ),
+      createCloseAccountInstruction(
+        counterparty.ata,
+        this.keypair.publicKey,
+        this.keypair.publicKey
+      )
+    );
+
+    const sig = await sendAndConfirmTransaction(
       this.connection,
       tx,
       [this.keypair],
       { commitment: "confirmed" }
     );
 
-    console.log(`[matchmaker] swap confirmed: ${signature}`);
+    console.log(`[matchmaker] swap confirmed: ${sig}`);
+    console.log(`  requester got: ${ctpAcc.amount} of ${ctpAcc.mint.toBase58().slice(0,8)} (~$${ctpUsd?.toFixed(2)})`);
+    console.log(`  counterparty got: ${reqAcc.amount} of ${reqAcc.mint.toBase58().slice(0,8)} (~$${reqUsd?.toFixed(2)})`);
+    console.log(`  entropy slot: ${entropy.entropySlot}, index: ${entropy.randomIndex}/${poolExSender.length}`);
 
-    // Remove both from local pool index
-    this.pool.remove(roll.requesterAta);
+    this.pool.remove(requester.ata);
     this.pool.remove(counterparty.ata);
-
-    return {
-      signature,
-      requester: roll.requester,
-      counterparty: counterparty.owner,
-      requesterMint,
-      counterpartyMint,
-      requesterAmount: reqAmountRaw,
-      counterpartyAmount: ctpAmountRaw,
-      requesterUsd: reqUsd ?? 0,
-      counterpartyUsd: ctpUsd ?? 0,
-      entropySlot,
-      randomIndex,
-      poolSizeAtRoll: poolSize,
-    };
   }
-}
 
-/** Parse a RollRequested event from program logs. */
-function parseRollRequestedLog(logs: string[]): RollRequest | null {
-  for (const log of logs) {
-    if (!log.includes("RollRequested")) continue;
-    try {
-      // Anchor emits events as base64 in "Program data: <b64>" lines
-      const match = log.match(/Program data: (.+)/);
-      if (!match) continue;
-      const buf = Buffer.from(match[1], "base64");
-      // Skip 8-byte discriminator, then parse fields
-      // requester: 32, requester_ata: 32, request_slot: 8, roll_fee: 8
-      let off = 8;
-      const requester = new PublicKey(buf.subarray(off, off + 32));
-      off += 32;
-      const requesterAta = new PublicKey(buf.subarray(off, off + 32));
-      off += 32;
-      const requestSlot = buf.readBigUInt64LE(off);
-      off += 8;
-      const rollFeeLamports = buf.readBigUInt64LE(off);
-      return { requester, requesterAta, requestSlot, rollFeeLamports };
-    } catch {
-      continue;
+  private async pickHighestValueEntry(
+    entries: Awaited<ReturnType<GachaPool["getAll"]>>
+  ) {
+    let best = entries[0];
+    let bestUsd = -1;
+    for (const e of entries) {
+      try {
+        const acc = await getAccount(this.connection, e.ata);
+        const mint = await getMint(this.connection, acc.mint);
+        const usd = await getSwapBasedUsdValue(acc.mint.toBase58(), acc.amount, mint.decimals);
+        if ((usd ?? 0) > bestUsd) {
+          bestUsd = usd ?? 0;
+          best = e;
+        }
+      } catch { /* skip unreadable ATAs */ }
     }
+    return best;
   }
-  return null;
 }

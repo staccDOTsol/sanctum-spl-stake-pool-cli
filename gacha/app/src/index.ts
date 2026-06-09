@@ -1,23 +1,12 @@
 #!/usr/bin/env node
-/**
- * CLI entry point.
- *
- * Commands:
- *   matchmaker          Run the matchmaker service (requires MATCHMAKER_KEYPAIR env)
- *   register <ata>      Join the gacha pool with a given ATA
- *   deregister <ata>    Leave the pool
- *   roll <ata>          Pay to roll (matchmaker executes swap async)
- *   pool                Print the current active pool and USD values
- */
-
 import "dotenv/config";
 import { startHealthServer } from "./health.js";
 import { Command } from "commander";
-import { Connection, Keypair, PublicKey } from "@solana/web3.js";
-import { getMint, getAccount } from "@solana/spl-token";
+import { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { getAccount, getMint } from "@solana/spl-token";
 import bs58 from "bs58";
 import { Matchmaker } from "./matchmaker.js";
-import { registerDelegate, deregisterDelegate, requestRoll } from "./register.js";
+import { delegateAta, revokeAta, payToRoll } from "./register.js";
 import { GachaPool } from "./pool.js";
 import { getPrices } from "./jupiter.js";
 
@@ -32,35 +21,27 @@ function loadKeypair(envKey: string): Keypair {
 }
 
 function getConnection(): Connection {
-  const rpc = process.env.SOLANA_RPC ?? "https://api.devnet.solana.com";
+  const rpc = process.env.SOLANA_RPC ?? "https://api.mainnet-beta.solana.com";
   return new Connection(rpc, "confirmed");
 }
 
 const program = new Command()
   .name("gacha")
-  .description("Solana gacha CLI")
+  .description("Solana gacha — offchain matchmaker")
   .version("0.1.0");
 
 program
   .command("matchmaker")
   .description("Run the matchmaker service")
   .action(async () => {
-    // Health server starts immediately so Fly's TCP check passes
-    // even before secrets are fully configured.
     startHealthServer();
 
-    const missingSecrets: string[] = [];
-    if (!process.env.MATCHMAKER_KEYPAIR) missingSecrets.push("MATCHMAKER_KEYPAIR");
-    if (!process.env.GACHA_PROGRAM_ID)   missingSecrets.push("GACHA_PROGRAM_ID");
-
-    if (missingSecrets.length > 0) {
+    if (!process.env.MATCHMAKER_KEYPAIR) {
       console.error(
-        `[matchmaker] missing required secrets: ${missingSecrets.join(", ")}\n` +
-        `Set them with:\n` +
-        missingSecrets.map(s => `  fly secrets set ${s}=<value> -a gacha-matchmaker`).join("\n") +
-        `\nProcess will stay alive for health checks but will not match until secrets are set.`
+        "[matchmaker] MATCHMAKER_KEYPAIR not set.\n" +
+        "  fly secrets set MATCHMAKER_KEYPAIR=<base58-or-json> -a gacha-matchmaker\n" +
+        "Process parked — health check passing."
       );
-      // Keep process alive (health server is running); exit only if a signal arrives.
       await new Promise(() => {});
       return;
     }
@@ -72,99 +53,67 @@ program
   });
 
 program
-  .command("register <ata>")
-  .description("Register an ATA for the gacha pool")
-  .option("-a, --amount <n>", "Raw token amount to delegate (default: full balance)")
-  .action(async (ataStr: string, opts: { amount?: string }) => {
-    const keypair = loadKeypair("USER_KEYPAIR");
-    const connection = getConnection();
-    const ata = new PublicKey(ataStr);
-    const matchmaker = new PublicKey(
-      process.env.MATCHMAKER_PUBKEY ??
-        (() => { throw new Error("Missing MATCHMAKER_PUBKEY"); })()
-    );
-
-    let amount: bigint;
-    if (opts.amount) {
-      amount = BigInt(opts.amount);
-    } else {
-      const acc = await getAccount(connection, ata);
-      amount = acc.amount;
-    }
-
-    console.log(`Registering ATA ${ataStr} with amount ${amount}…`);
-    const sig = await registerDelegate(connection, keypair, ata, matchmaker, amount);
-    console.log(`Done: ${sig}`);
-  });
-
-program
-  .command("deregister <ata>")
-  .description("Remove an ATA from the gacha pool")
+  .command("delegate <ata>")
+  .description("Approve matchmaker on an ATA to enter the pool")
   .action(async (ataStr: string) => {
-    const keypair = loadKeypair("USER_KEYPAIR");
-    const connection = getConnection();
-    const sig = await deregisterDelegate(connection, keypair, new PublicKey(ataStr));
-    console.log(`Deregistered: ${sig}`);
-  });
-
-program
-  .command("roll <ata>")
-  .description("Pay to roll — matchmaker will execute the swap")
-  .option("-f, --fee <lamports>", "Roll fee in lamports", "5000000")
-  .action(async (ataStr: string, opts: { fee: string }) => {
-    const keypair = loadKeypair("USER_KEYPAIR");
-    const connection = getConnection();
+    const user = loadKeypair("USER_KEYPAIR");
     const matchmaker = new PublicKey(
       process.env.MATCHMAKER_PUBKEY ??
         (() => { throw new Error("Missing MATCHMAKER_PUBKEY"); })()
     );
-    const sig = await requestRoll(
-      connection,
-      keypair,
-      new PublicKey(ataStr),
-      matchmaker,
-      BigInt(opts.fee)
-    );
-    console.log(`Roll requested: ${sig}`);
-    console.log("Waiting for matchmaker to execute swap…");
+    const sig = await delegateAta(getConnection(), user, new PublicKey(ataStr), matchmaker);
+    console.log(`Delegated: ${sig}`);
+  });
+
+program
+  .command("revoke <ata>")
+  .description("Revoke matchmaker delegation (exit the pool)")
+  .action(async (ataStr: string) => {
+    const user = loadKeypair("USER_KEYPAIR");
+    const matchmaker = new PublicKey(process.env.MATCHMAKER_PUBKEY!);
+    const sig = await revokeAta(getConnection(), user, new PublicKey(ataStr), matchmaker);
+    console.log(`Revoked: ${sig}`);
+  });
+
+program
+  .command("roll")
+  .description("Send roll fee to matchmaker to trigger a swap")
+  .option("-f, --fee <sol>", "Roll fee in SOL", "0.003")
+  .action(async (opts: { fee: string }) => {
+    const user = loadKeypair("USER_KEYPAIR");
+    const matchmaker = new PublicKey(process.env.MATCHMAKER_PUBKEY!);
+    const feeLamports = BigInt(Math.floor(parseFloat(opts.fee) * LAMPORTS_PER_SOL));
+    const sig = await payToRoll(getConnection(), user, matchmaker, feeLamports);
+    console.log(`Roll sent: ${sig}`);
+    console.log("Matchmaker will execute the swap within ~1 slot (~400ms).");
   });
 
 program
   .command("pool")
-  .description("Show current active delegates with USD values")
+  .description("Show all ATAs currently delegated to the matchmaker")
   .action(async () => {
+    const matchmaker = new PublicKey(process.env.MATCHMAKER_PUBKEY!);
     const connection = getConnection();
-    const pool = new GachaPool(connection);
+    const pool = new GachaPool(connection, matchmaker);
     await pool.sync();
 
     const entries = pool.getAll();
-    if (entries.length === 0) {
-      console.log("Pool is empty.");
-      return;
-    }
+    if (!entries.length) { console.log("Pool is empty."); return; }
 
-    // Batch price all unique mints
-    const mints = [...new Set(entries.map((e) => e.mint.toBase58()))];
+    const mints = [...new Set(entries.map(e => e.mint.toBase58()))];
     const prices = await getPrices(mints);
 
-    console.log(`\n${"Owner".padEnd(44)} ${"ATA".padEnd(44)} ${"Mint".padEnd(44)} Amount     USD`);
-    console.log("─".repeat(160));
-
+    console.log(`\n${"Owner".padEnd(44)} ${"ATA".padEnd(44)} ${"Mint".padEnd(44)} Amount     ~USD`);
+    console.log("─".repeat(165));
     for (const e of entries) {
-      const price = prices.get(e.mint.toBase58()) ?? null;
-      let usdStr = "?";
-      if (price !== null) {
-        usdStr = `$${(Number(e.registeredAmount) * price).toFixed(2)}`;
-      }
+      const p = prices.get(e.mint.toBase58()) ?? null;
+      const usd = p ? `$${(Number(e.registeredAmount) * p).toFixed(2)}` : "?";
       console.log(
         `${e.owner.toBase58().padEnd(44)} ${e.ata.toBase58().padEnd(44)} ` +
-          `${e.mint.toBase58().padEnd(44)} ${e.registeredAmount.toString().padEnd(10)} ${usdStr}`
+        `${e.mint.toBase58().padEnd(44)} ${e.registeredAmount.toString().padEnd(10)} ${usd}`
       );
     }
     console.log(`\nTotal: ${entries.length} delegates`);
   });
 
-program.parseAsync(process.argv).catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+program.parseAsync(process.argv).catch(err => { console.error(err); process.exit(1); });

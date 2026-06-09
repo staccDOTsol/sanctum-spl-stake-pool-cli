@@ -1,108 +1,110 @@
 /**
- * Offchain pool index: tracks all active DelegateEntry accounts by listening
- * to on-chain program events and doing periodic resync.
+ * Pool: all SPL token accounts that have delegated to the matchmaker.
  *
- * The matchmaker uses this to:
- *   - Know the current pool size (for randomness index)
- *   - Look up the N-th active entry (counterparty selection)
- *   - Price all entries via Jupiter for USD-value logging
+ * No on-chain program — we just query the SPL token program directly.
+ * Any ATA with:
+ *   delegate = MATCHMAKER_PUBKEY
+ *   close_authority = MATCHMAKER_PUBKEY   (so we can collect rent)
+ *   amount > 0
+ * is eligible for the gacha pool.
  */
 
 import {
   Connection,
-  GetProgramAccountsFilter,
   PublicKey,
+  GetProgramAccountsFilter,
 } from "@solana/web3.js";
+import {
+  AccountLayout,
+  TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+} from "@solana/spl-token";
 import { DelegateEntry } from "./types.js";
-
-function getProgramId(): PublicKey {
-  const id = process.env.GACHA_PROGRAM_ID;
-  if (!id) throw new Error("GACHA_PROGRAM_ID env var not set");
-  return new PublicKey(id);
-}
-
-// Discriminator for DelegateEntry (first 8 bytes of sha256("account:DelegateEntry"))
-// Recompute with: `anchor build && cat target/idl/gacha.json | jq .accounts`
-const DELEGATE_ENTRY_DISC = Buffer.from([
-  // Placeholder — replace after anchor build
-  0xd3, 0x5a, 0x85, 0x01, 0x23, 0x4f, 0xb1, 0xe2,
-]);
 
 export class GachaPool {
   private entries: DelegateEntry[] = [];
   private lastSync = 0;
 
-  constructor(private connection: Connection) {}
+  constructor(
+    private connection: Connection,
+    private matchmaker: PublicKey
+  ) {}
 
-  /** Fetch all active DelegateEntry PDAs from the program. */
   async sync(): Promise<void> {
-    const filters: GetProgramAccountsFilter[] = [
-      { dataSize: 8 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 30 }, // DelegateEntry::LEN
-      { memcmp: { offset: 0, bytes: DELEGATE_ENTRY_DISC.toString("base64") } },
-      { memcmp: { offset: 8 + 32 + 32 + 32 + 8 + 8, bytes: "01" } }, // is_active = true (offset 112, value 0x01)
-    ];
+    const [v1, v2] = await Promise.all([
+      this.fetchDelegated(TOKEN_PROGRAM_ID),
+      this.fetchDelegated(TOKEN_2022_PROGRAM_ID),
+    ]);
+    this.entries = [...v1, ...v2];
+    this.lastSync = Date.now();
+    console.log(`[pool] synced ${this.entries.length} delegated ATAs`);
+  }
 
-    const accounts = await this.connection.getProgramAccounts(getProgramId(), {
-      filters,
-      encoding: "base64",
+  async syncIfStale(): Promise<void> {
+    if (Date.now() - this.lastSync > 30_000) await this.sync();
+  }
+
+  private async fetchDelegated(tokenProgram: PublicKey): Promise<DelegateEntry[]> {
+    // Filter: delegate = matchmaker (offset 76, 36 bytes = COption<Pubkey>)
+    // COption::Some(pubkey) = [1,0,0,0, ...32 bytes...]
+    const delegateFilter: GetProgramAccountsFilter = {
+      memcmp: {
+        offset: 72,
+        bytes: Buffer.concat([
+          Buffer.from([1, 0, 0, 0]),
+          this.matchmaker.toBuffer(),
+        ]).toString("base64"),
+        encoding: "base64",
+      },
+    };
+
+    const accounts = await this.connection.getProgramAccounts(tokenProgram, {
+      filters: [{ dataSize: 165 }, delegateFilter],
     });
 
-    this.entries = accounts
+    return accounts
       .map(({ pubkey, account }) => {
         try {
-          return deserializeDelegateEntry(pubkey, account.data as unknown as Buffer);
+          const data = AccountLayout.decode(account.data);
+          // Must have close authority = matchmaker too
+          if (
+            data.closeAuthorityOption !== 1 ||
+            !new PublicKey(data.closeAuthority).equals(this.matchmaker)
+          ) {
+            return null;
+          }
+          if (data.amount === 0n) return null;
+          return {
+            owner: new PublicKey(data.owner),
+            ata: pubkey,
+            mint: new PublicKey(data.mint),
+            registeredAmount: data.amount,
+            registeredAt: 0,
+            isActive: true,
+            pda: pubkey,
+          } satisfies DelegateEntry;
         } catch {
           return null;
         }
       })
       .filter((e): e is DelegateEntry => e !== null);
-
-    this.lastSync = Date.now();
-    console.log(`[pool] synced ${this.entries.length} active delegates`);
   }
 
-  /** Sync if stale (> 30 s since last sync). */
-  async syncIfStale(): Promise<void> {
-    if (Date.now() - this.lastSync > 30_000) await this.sync();
-  }
+  get size(): number { return this.entries.length; }
 
-  get size(): number {
-    return this.entries.length;
-  }
-
-  /** Get the N-th entry (the random selection result). */
   get(index: bigint): DelegateEntry | undefined {
+    if (this.entries.length === 0) return undefined;
     return this.entries[Number(index % BigInt(this.entries.length))];
   }
 
-  /** Remove an entry locally (post-swap, before next resync). */
+  /** Get all ATAs delegated by a specific owner. */
+  getByOwner(owner: PublicKey): DelegateEntry[] {
+    return this.entries.filter(e => e.owner.equals(owner));
+  }
+
   remove(ata: PublicKey): void {
-    this.entries = this.entries.filter(
-      (e) => !e.ata.equals(ata)
-    );
+    this.entries = this.entries.filter(e => !e.ata.equals(ata));
   }
 
-  getAll(): DelegateEntry[] {
-    return [...this.entries];
-  }
-}
-
-function deserializeDelegateEntry(
-  pda: PublicKey,
-  data: Buffer
-): DelegateEntry {
-  let offset = 8; // skip discriminator
-  const owner = new PublicKey(data.subarray(offset, offset + 32));
-  offset += 32;
-  const ata = new PublicKey(data.subarray(offset, offset + 32));
-  offset += 32;
-  const mint = new PublicKey(data.subarray(offset, offset + 32));
-  offset += 32;
-  const registeredAmount = data.readBigUInt64LE(offset);
-  offset += 8;
-  const registeredAt = Number(data.readBigInt64LE(offset));
-  offset += 8;
-  const isActive = data[offset] === 1;
-
-  return { owner, ata, mint, registeredAmount, registeredAt, isActive, pda };
+  getAll(): DelegateEntry[] { return [...this.entries]; }
 }
