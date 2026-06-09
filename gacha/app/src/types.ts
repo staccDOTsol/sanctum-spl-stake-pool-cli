@@ -6,6 +6,9 @@ export interface DelegateEntry {
   mint: PublicKey;
   /** Token program that owns this ATA (TOKEN or TOKEN_2022). */
   programId: PublicKey;
+  /** UI (human) amount and decimals — for value-band matching. */
+  uiAmount: number;
+  decimals: number;
   registeredAmount: bigint;
   registeredAt: number;
   isActive: boolean;

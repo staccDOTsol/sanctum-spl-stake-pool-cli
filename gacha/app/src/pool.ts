@@ -25,7 +25,7 @@ interface ParsedInfo {
   mint: string;
   delegate?: string;
   closeAuthority?: string;
-  tokenAmount: { amount: string };
+  tokenAmount: { amount: string; decimals: number; uiAmount: number | null };
 }
 
 export class GachaPool {
@@ -83,11 +83,15 @@ export class GachaPool {
         if (info.delegate !== this.mmStr || info.closeAuthority !== this.mmStr) continue;
         const amount = BigInt(info.tokenAmount.amount);
         if (amount === 0n) continue;
+        const decimals = info.tokenAmount.decimals;
+        const uiAmount = info.tokenAmount.uiAmount ?? Number(amount) / Math.pow(10, decimals);
         out.push({
           owner,
           ata: pubkey,
           mint: new PublicKey(info.mint),
           programId,
+          uiAmount,
+          decimals,
           registeredAmount: amount,
           registeredAt: Date.now(),
           isActive: true,

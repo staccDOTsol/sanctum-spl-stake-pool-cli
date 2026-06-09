@@ -20,6 +20,7 @@ import {
   LAMPORTS_PER_SOL,
 } from "@solana/web3.js";
 import {
+  TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountIdempotentInstruction,
   createCloseAccountInstruction,
   createTransferCheckedInstruction,
@@ -29,7 +30,7 @@ import {
 } from "@solana/spl-token";
 import { computeEntropy } from "./randomness.js";
 import { GachaPool } from "./pool.js";
-import { getSwapBasedUsdValue } from "./jupiter.js";
+import { getSwapBasedUsdValue, getPrices } from "./jupiter.js";
 import { startHealthServer } from "./health.js";
 import { DividendLedger } from "./dividend.js";
 import { SwapHistory, rarityForMult } from "./history.js";
@@ -39,9 +40,10 @@ import { classifyMint, loadTierLists, TIER_LABEL, TokenTier } from "./tiers.js";
 const MIN_ROLL_FEE = parseFloat(process.env.MIN_ROLL_FEE_SOL ?? "0.003") * LAMPORTS_PER_SOL;
 /** One payment of N× the roll fee buys N swaps (the 10-pull), capped here. */
 const MAX_ROLLS_PER_PAYMENT = parseInt(process.env.MAX_ROLLS_PER_PAYMENT ?? "10");
-/** Tier matching (blue-chip↔blue-chip etc.) — disable to bootstrap liquidity
- *  pre-PMF so any delegated token can swap with any other. */
-const TIER_MATCHING = (process.env.DISABLE_TIER_MATCHING ?? "false").toLowerCase() !== "true";
+/** Roll-for-roll value matching: a roll only matches a counterparty whose USD
+ *  value is within VALUE_BAND× (so a worthless coin can't drain a valuable one).
+ *  Wider = more liquidity but more value swing; tighter = closer to even swaps. */
+const VALUE_BAND = parseFloat(process.env.VALUE_BAND ?? "3");
 
 export class Matchmaker {
   private pool: GachaPool;
@@ -198,26 +200,30 @@ export class Matchmaker {
     }
     const requesterTier = await classifyMint(reqAccPrelim.mint.toBase58(), this.connection);
 
-    // Candidate counterparties: everyone in the pool but the sender. With tier
-    // matching on, restrict to the same tier (anti-gaming); off (pre-PMF), open.
-    let candidates: ReturnType<GachaPool["getAll"]>;
-    if (TIER_MATCHING) {
-      candidates = await Promise.all(
-        this.pool.getAll()
-          .filter(e => !e.owner.equals(sender))
-          .map(async e => {
-            const t = await classifyMint(e.mint.toBase58(), this.connection);
-            return t === requesterTier ? e : null;
-          })
-      ).then(arr => arr.filter((e): e is NonNullable<typeof e> => e !== null));
-    } else {
-      candidates = this.pool.getAll().filter(e => !e.owner.equals(sender));
-    }
+    // ROLL-FOR-ROLL value matching: match only counterparties whose USD value is
+    // within VALUE_BAND× of the rolled bag, so a worthless coin can't take a
+    // valuable one. (Replaces token-provenance tiers.)
+    const poolMinusSelf = this.pool.getAll().filter(e => !e.owner.equals(sender));
+    const mintSet = [...new Set([reqAccPrelim.mint.toBase58(), ...poolMinusSelf.map(e => e.mint.toBase58())])];
+    const prices = await getPrices(mintSet);
+    const valueOf = (mint: string, uiAmount: number): number | null => {
+      const p = prices.get(mint);
+      return p != null ? p * uiAmount : null;
+    };
+    const reqUiAmount = Number(reqAccPrelim.amount) / Math.pow(10, requester.decimals);
+    const reqValue = valueOf(reqAccPrelim.mint.toBase58(), reqUiAmount);
+
+    let candidates = poolMinusSelf.filter(e => {
+      const v = valueOf(e.mint.toBase58(), e.uiAmount);
+      if (reqValue == null) return v == null;        // unpriceable ↔ unpriceable
+      if (v == null) return false;
+      return v >= reqValue / VALUE_BAND && v <= reqValue * VALUE_BAND;
+    });
 
     if (candidates.length === 0) {
       console.warn(
-        `[matchmaker] no counterparty in pool for ${sender.toBase58().slice(0, 8)} ` +
-        `(${TIER_MATCHING ? `tier ${TIER_LABEL[requesterTier]}` : "open matching"}) — pool needs another delegated wallet`
+        `[matchmaker] no value-matched counterparty for ${sender.toBase58().slice(0, 8)} ` +
+        `($${reqValue?.toFixed(2) ?? "?"} within ${VALUE_BAND}×) — waiting for a similar-value bag`
       );
       return;
     }
@@ -252,7 +258,7 @@ export class Matchmaker {
       }
     }
 
-    console.log(`[matchmaker] ${TIER_MATCHING ? `tier ${TIER_LABEL[requesterTier]}` : "open matching"} — ${candidates.length} candidates`);
+    console.log(`[matchmaker] roll-for-roll ($${reqValue?.toFixed(2) ?? "?"} ±${VALUE_BAND}×) — ${candidates.length} candidates`);
 
     // Provably fair counterparty selection within tier
     const entropy = await computeEntropy(
@@ -337,15 +343,16 @@ export class Matchmaker {
       )
     );
 
-    // Close old (now-empty) ATAs → rent to matchmaker (we hold close authority)
-    tx.add(
-      createCloseAccountInstruction(
-        requester.ata, this.keypair.publicKey, this.keypair.publicKey, [], reqProgram
-      ),
-      createCloseAccountInstruction(
-        counterparty.ata, this.keypair.publicKey, this.keypair.publicKey, [], ctpProgram
-      )
-    );
+    // Close old (now-empty) ATAs → rent to matchmaker (we hold close authority).
+    // Classic Token only: Token-2022 accounts can carry withheld transfer fees
+    // that make CloseAccount fail (custom error 0x23), which would brick the
+    // whole swap. We leave those open (owner keeps the rent).
+    if (reqProgram.equals(TOKEN_PROGRAM_ID)) {
+      tx.add(createCloseAccountInstruction(requester.ata, this.keypair.publicKey, this.keypair.publicKey, [], reqProgram));
+    }
+    if (ctpProgram.equals(TOKEN_PROGRAM_ID)) {
+      tx.add(createCloseAccountInstruction(counterparty.ata, this.keypair.publicKey, this.keypair.publicKey, [], ctpProgram));
+    }
 
     const sig = await sendAndConfirmTransaction(
       this.connection,
