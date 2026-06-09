@@ -6,8 +6,8 @@
 //   overall : career PnL across every wish this wallet initiated
 // Rendered branded + fixed-width so they screenshot cleanly; with Tweet + PNG.
 
-import { useRef, useState } from "react";
-import { toPng } from "html-to-image";
+import { useEffect, useRef, useState } from "react";
+import { toPng, toBlob } from "html-to-image";
 import { RARITIES, Pull, PnlStats, fmtUsd, fmtMult } from "@/lib/gacha/data";
 import { RarityCoin, Stars } from "./Fx";
 
@@ -23,18 +23,62 @@ const GREEN = "#7CFFB2", RED = "#ff6b6b";
 export function PnlCardModal({ mode, onClose }: { mode: Mode; onClose: () => void }) {
   const cardRef = useRef<HTMLDivElement>(null);
   const [saving, setSaving] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const fileRef = useRef<File | null>(null);
 
   const tweetText = buildTweet(mode);
   const tweetHref = `https://twitter.com/intent/tweet?text=${encodeURIComponent(tweetText)}&url=${encodeURIComponent("https://switcheroo.lol")}`;
+
+  const opts = { pixelRatio: 2, cacheBust: true, backgroundColor: "#06040f" } as const;
+
+  // Pre-render the PNG once the card has painted so the Share tap stays a valid
+  // user gesture on iOS (which forbids async work before navigator.share).
+  useEffect(() => {
+    const t = setTimeout(async () => {
+      try {
+        if (!cardRef.current) return;
+        const blob = await toBlob(cardRef.current, opts);
+        if (blob) fileRef.current = new File([blob], "switcheroo-pnl.png", { type: "image/png" });
+      } catch { /* ignore */ }
+    }, 450);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const savePng = async () => {
     if (!cardRef.current) return;
     setSaving(true);
     try {
-      const url = await toPng(cardRef.current, { pixelRatio: 2, cacheBust: true, backgroundColor: "#06040f" });
+      const url = await toPng(cardRef.current, opts);
       const a = document.createElement("a");
       a.href = url; a.download = "switcheroo-pnl.png"; a.click();
     } catch { /* ignore */ } finally { setSaving(false); }
+  };
+
+  // Share the actual PNG (attaches the image in the X app on mobile via the
+  // native share sheet — tweet-intent URLs can't carry media). Desktop falls
+  // back to downloading the PNG + opening the X composer.
+  const share = async () => {
+    setSharing(true);
+    try {
+      let file = fileRef.current;
+      if (!file && cardRef.current) {
+        const blob = await toBlob(cardRef.current, opts);
+        if (blob) file = new File([blob], "switcheroo-pnl.png", { type: "image/png" });
+      }
+      const nav = navigator as Navigator & { canShare?: (d: unknown) => boolean };
+      if (file && nav.canShare && nav.canShare({ files: [file] })) {
+        await nav.share({ files: [file], text: tweetText } as ShareData);
+        return;
+      }
+      if (file) {
+        const url = URL.createObjectURL(file);
+        const a = document.createElement("a");
+        a.href = url; a.download = "switcheroo-pnl.png"; a.click();
+        URL.revokeObjectURL(url);
+      }
+      window.open(tweetHref, "_blank", "noopener");
+    } catch { /* user cancelled share */ } finally { setSharing(false); }
   };
 
   return (
@@ -69,7 +113,7 @@ export function PnlCardModal({ mode, onClose }: { mode: Mode; onClose: () => voi
 
       {/* actions (not captured in the PNG) */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
-        <a href={tweetHref} target="_blank" rel="noopener noreferrer" style={btn("#1d9bf0")}>🐦 Tweet</a>
+        <button onClick={share} style={btn("#1d9bf0")}>{sharing ? "Sharing…" : "📤 Share to X (with image)"}</button>
         <button onClick={savePng} style={btn("#b06bff")}>{saving ? "Saving…" : "⬇ Save PNG"}</button>
         <button onClick={onClose} style={btn("rgba(255,255,255,0.1)", true)}>Close</button>
       </div>
