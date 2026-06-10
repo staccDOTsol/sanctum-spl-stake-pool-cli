@@ -246,13 +246,14 @@ export function Banner({
         )}
       </div>
 
-      <div style={{
-        textAlign: "center", margin: "0 auto 14px", maxWidth: 560, padding: "8px 16px", borderRadius: 999,
+      <a href="https://pump.fun/coin/ECqs4vf3WeMPQe2kP1ymKDvTEAkyy32f9rjSV2Qmpump" target="_blank" rel="noopener noreferrer" style={{
+        display: "block", textAlign: "center", margin: "0 auto 14px", maxWidth: 560,
+        padding: "8px 16px", borderRadius: 999, textDecoration: "none",
         background: "rgba(124,255,178,0.07)", border: "1px solid rgba(124,255,178,0.2)",
-        fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", color: "#7CFFB2",
+        fontFamily: "var(--mono)", fontSize: 11, fontWeight: 700, letterSpacing: "0.03em", color: "#7CFFB2",
       }}>
-        This site will never have a meme coin.
-      </div>
+        The only official meme is <span style={{ wordBreak: "break-all" }}>ECqs4vf3WeMPQe2kP1ymKDvTEAkyy32f9rjSV2Qmpump</span> ↗
+      </a>
 
       <div style={{ textAlign: "center", fontSize: 11, color: "rgba(255,255,255,0.3)", fontFamily: "var(--mono)", lineHeight: 1.6 }}>
         100% custodial while pooled. The matchmaker holds delegate + close authority on every delegated ATA. That&apos;s the whole trick.<br />
