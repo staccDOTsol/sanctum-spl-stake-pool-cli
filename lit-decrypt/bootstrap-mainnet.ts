@@ -38,7 +38,7 @@ import { fileURLToPath } from "url";
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
 
-const RPC_URL    = process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com";
+const RPC_URL    = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
 const MIN_SOL    = 0.05;
 
 // r-fstacc LST mainnet mint

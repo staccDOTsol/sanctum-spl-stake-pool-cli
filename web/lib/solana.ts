@@ -4,7 +4,7 @@
  * Uses raw fetch (no @solana/web3.js in the edge runtime).
  */
 
-const RPC = process.env.SOLANA_RPC_URL ?? "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8";
+const RPC = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
 
 // Meteora DBC VirtualPool account layout (from the SDK's Anchor IDL):
 //   offset   0 — discriminator (8)

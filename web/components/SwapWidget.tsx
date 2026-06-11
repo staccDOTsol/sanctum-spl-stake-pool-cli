@@ -7,8 +7,7 @@ import { DynamicBondingCurveClient } from "@meteora-ag/dynamic-bonding-curve-sdk
 import BN from "bn.js";
 import { connectWallet, type WalletProvider } from "@/lib/deploy/wallet";
 
-const RPC      = process.env.NEXT_PUBLIC_SOLANA_RPC_URL
-  ?? "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8";
+const RPC      = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
 const SOL_MINT  = "So11111111111111111111111111111111111111112";
 const LEAK_MINT = "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS";
 const SLIPPAGE  = 100; // 1%

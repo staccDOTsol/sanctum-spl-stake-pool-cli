@@ -22,8 +22,7 @@ import {
 
 export const runtime = "nodejs";
 
-const RPC_URL   = process.env.SOLANA_RPC_URL
-  ?? "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8";
+const RPC_URL   = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
 
 // stable quote = rfreestacc (set RFREESTACC_QUOTE_MINT env var once deployed)
 // meme   quote = GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump

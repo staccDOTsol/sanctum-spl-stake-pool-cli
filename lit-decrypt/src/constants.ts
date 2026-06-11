@@ -16,7 +16,7 @@ export const LIT_NAGA_RPC_URL = "https://naga.litgateway.com";
 
 // Solana RPC used inside Lit Action TEE for pool state reads
 export const SOLANA_RPC_URL_FOR_LIT_ACTION =
-  "https://api.mainnet-beta.solana.com";
+  "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
 
 // Default Meteora DBC FeeScheduler params for Pool 1 (anti-snipe: 99 % → baseline)
 export const POOL1_INITIAL_FEE_BPS = 9900;  // 99 %
