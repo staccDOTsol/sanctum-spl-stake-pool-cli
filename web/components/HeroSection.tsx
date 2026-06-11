@@ -17,7 +17,7 @@ export default function HeroSection() {
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-green-500/20 bg-green-500/8 mb-6">
           <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
           <span className="text-xs font-mono text-green-400/80 uppercase tracking-widest">
-            Lit Protocol v8 · Meteora DBC · Solana
+            Lit Protocol · Meteora DBC · Solana
           </span>
         </div>
 
@@ -44,7 +44,7 @@ export default function HeroSection() {
         {/* How it works pills */}
         <div className="flex flex-wrap gap-2 mb-10">
           {[
-            { icon: "🔒", text: "Content encrypted on Lit v8 (Naga)" },
+            { icon: "🔒", text: "Content encrypted with Lit Protocol" },
             { icon: "📈", text: "Leak token = buy more decryption" },
             { icon: "🔐", text: "DontLeak token = vote for secrecy" },
             { icon: "⚡", text: "TEE decrypts only floor(r × bytes)" },

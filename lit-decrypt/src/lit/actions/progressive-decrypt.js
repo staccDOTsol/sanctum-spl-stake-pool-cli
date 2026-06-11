@@ -29,16 +29,16 @@
  */
 
 // ---------------------------------------------------------------------------
-// Constants: Meteora DBC pool account layout offsets (Anchor IDL v0.5)
-//   [0..8]   discriminator
-//   [8..40]  quote_mint
-//   [40..72] base_mint
+// Constants: Meteora DBC VirtualPool account layout (from the SDK's Anchor IDL)
+//   [0..8]    discriminator
+//   [8..72]   volatility_tracker
 //   [72..104] config
 //   [104..136] creator
-//   [136..168] base_vault  ← offset used below
-//   [168..200] quote_vault
+//   [136..168] base_mint
+//   [168..200] base_vault  ← offset used below
+//   [200..232] quote_vault
 // ---------------------------------------------------------------------------
-const BASE_VAULT_OFFSET = 136;
+const BASE_VAULT_OFFSET = 168;
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -6,8 +6,20 @@
 
 const RPC = process.env.SOLANA_RPC_URL ?? "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8";
 
-// Meteora DBC pool account layout — base_vault at offset 136
-const BASE_VAULT_OFFSET = 136;
+// Meteora DBC VirtualPool account layout (from the SDK's Anchor IDL):
+//   offset   0 — discriminator (8)
+//   offset   8 — volatility_tracker (64)
+//   offset  72 — config (32)
+//   offset 104 — creator (32)
+//   offset 136 — base_mint (32)
+//   offset 168 — base_vault (32)
+//   offset 200 — quote_vault (32)
+//
+// The "market vote" lives in the QUOTE vaults: buying Leak deposits LEAK
+// into the L1 pool's quote vault; buying DontLeak deposits the quote token
+// into the L2 pool's quote vault. (The base vaults move the opposite way —
+// they drain as tokens are bought — so they'd invert the ratio.)
+const QUOTE_VAULT_OFFSET = 200;
 
 async function rpc(method: string, params: unknown[]) {
   const res = await fetch(RPC, {
@@ -36,16 +48,29 @@ function bytesToBase58(bytes: Uint8Array): string {
   return s;
 }
 
-async function getBaseVaultAddress(poolAddress: string): Promise<string> {
+async function getQuoteVaultAddress(poolAddress: string): Promise<string> {
   const result = await rpc("getAccountInfo", [poolAddress, { encoding: "base64" }]);
   if (!result?.value?.data) throw new Error(`Pool not found: ${poolAddress}`);
   const data = base64ToBytes(result.value.data[0]);
-  return bytesToBase58(data.slice(BASE_VAULT_OFFSET, BASE_VAULT_OFFSET + 32));
+  if (data.length < QUOTE_VAULT_OFFSET + 32) throw new Error(`Pool account too small: ${poolAddress}`);
+  return bytesToBase58(data.slice(QUOTE_VAULT_OFFSET, QUOTE_VAULT_OFFSET + 32));
 }
 
-async function getTokenBalance(tokenAccount: string): Promise<bigint> {
-  const result = await rpc("getTokenAccountBalance", [tokenAccount]);
-  return BigInt(result?.value?.amount ?? "0");
+interface VaultBalance {
+  amount:   bigint;
+  uiAmount: number;
+}
+
+async function getVaultBalance(poolAddress: string): Promise<VaultBalance> {
+  // Missing pool (e.g. stable pools launched before the L1 pool existed)
+  // counts as zero rather than failing the whole ratio.
+  if (!poolAddress) return { amount: BigInt(0), uiAmount: 0 };
+  const vault  = await getQuoteVaultAddress(poolAddress);
+  const result = await rpc("getTokenAccountBalance", [vault]);
+  return {
+    amount:   BigInt(result?.value?.amount ?? "0"),
+    uiAmount: Number(result?.value?.uiAmountString ?? result?.value?.uiAmount ?? 0),
+  };
 }
 
 async function getSlot(): Promise<number> {
@@ -62,31 +87,27 @@ export interface PoolReserves {
 /**
  * Fetch live reserves from both pools and return the decryption ratio.
  *
- * Pool 1 base vault = Leak tokens locked (pro-decrypt).
- * Pool 2 base vault = DontLeak tokens locked (pro-secrecy).
- * r = Leak / (Leak + DontLeak)
+ * L1 pool quote vault = LEAK locked by Leak buyers (pro-decrypt).
+ * L2 pool quote vault = quote tokens locked by DontLeak buyers (pro-secrecy).
+ * Balances are compared in UI units so mints with different decimals
+ * (LEAK = 9, meme quote = 6) weigh comparably.
  */
 export async function fetchPoolRatio(
   leakPoolAddress: string,
   dontLeakPoolAddress: string
 ): Promise<PoolReserves> {
-  const [pool1Vault, pool2Vault, slot] = await Promise.all([
-    getBaseVaultAddress(leakPoolAddress),
-    getBaseVaultAddress(dontLeakPoolAddress),
+  const [leak, dontLeak, slot] = await Promise.all([
+    getVaultBalance(leakPoolAddress),
+    getVaultBalance(dontLeakPoolAddress),
     getSlot(),
   ]);
 
-  const [leakReserve, dontLeakReserve] = await Promise.all([
-    getTokenBalance(pool1Vault),
-    getTokenBalance(pool2Vault),
-  ]);
-
-  const total = leakReserve + dontLeakReserve;
+  const total = leak.uiAmount + dontLeak.uiAmount;
   // Square-root curve: r = sqrt(Leak / total).
   // DontLeak must square their position to halve each decrement — exponential cost to suppress.
   // At parity r≈0.71; to hold r<0.5 DontLeak needs 3× more tokens; r<0.1 needs 99×.
-  const p = total === BigInt(0) ? 0 : Number(leakReserve) / Number(total);
+  const p = total === 0 ? 0 : leak.uiAmount / total;
   const r = Math.sqrt(Math.max(0, Math.min(1, p)));
 
-  return { leakReserve, dontLeakReserve, r, slot };
+  return { leakReserve: leak.amount, dontLeakReserve: dontLeak.amount, r, slot };
 }

@@ -237,26 +237,32 @@ export default function SwapWidget({
       await conn.confirmTransaction({ signature: sig1, blockhash: bh1, lastValidBlockHeight: lvbh1 }, "confirmed");
       addLog(`✓ LEAK confirmed  (${sig1.slice(0, 16)}…)`);
 
+      // Buying Leak ends here: holding LEAK is both the market vote (the
+      // curve purchase deposited quote into the L1 vault) and the Lit
+      // decryption credential. Swapping it away would undo both.
+      if (mode === "leak") {
+        addLog("✓ Holding LEAK — your vote to reveal (and your decryption key)");
+        setDone(sig1);
+        return;
+      }
+
       // ── Step 2: DBC LEAK → quoteMint (L1 pool) ──────────────────────────
+      // L1 pools are base=LEAK / quote=rfreestacc|meme (verified on-chain),
+      // so spending LEAK is a base→quote swap.
       // Skip if quoteMint IS LEAK (stable pools with no separate L1 pool yet)
       const needsL1Swap = !!l1PoolAddress && quoteMint !== LEAK_MINT;
-      let quoteOut = leakOut;
-      let lastSig  = sig1;
 
       if (needsL1Swap) {
         addLog("Sign tx 2 — LEAK → quoteMint (DBC L1)");
-        lastSig  = await dbcSwap(conn, wallet, l1PoolAddress, leakOut, false, quoteIsT22, new PublicKey(LEAK_MINT));
-        quoteOut = leakOut;
-        addLog(`✓ quoteMint received  (${lastSig.slice(0, 16)}…)`);
+        const sig2 = await dbcSwap(conn, wallet, l1PoolAddress, leakOut, true, quoteIsT22, new PublicKey(LEAK_MINT));
+        addLog(`✓ quoteMint received  (${sig2.slice(0, 16)}…)`);
       } else {
         addLog("quoteMint = LEAK — skipping L1 pool swap");
       }
 
-      if (mode === "leak") { setDone(lastSig); return; }
-
       // ── Step 3: DBC quoteMint → DontLeak (L2 content pool) ───────────────
       addLog(`Sign tx ${needsL1Swap ? 3 : 2} — quoteMint → DontLeak (DBC L2)`);
-      const sig3 = await dbcSwap(conn, wallet, dontLeakPoolAddress, quoteOut, false, quoteIsT22, new PublicKey(quoteMint));
+      const sig3 = await dbcSwap(conn, wallet, dontLeakPoolAddress, leakOut, false, quoteIsT22, new PublicKey(quoteMint));
       addLog(`✓ DontLeak received  (${sig3.slice(0, 16)}…)`);
       setDone(sig3);
     } catch (e: unknown) {
@@ -319,18 +325,20 @@ export default function SwapWidget({
             {quoteErr ?? (leakPreview ? `~${fmt(leakPreview)}` : "…")}
           </span>
         </div>
-        <div className="flex justify-between">
-          <span className="text-white/30">→ quoteMint</span>
-          <span className="text-white/40">~market rate (DBC L1)</span>
-        </div>
         {!isLeak && (
-          <div className="flex justify-between">
-            <span className="text-white/30">→ DontLeak</span>
-            <span className="text-red-400/70">~market rate (DBC L2)</span>
-          </div>
+          <>
+            <div className="flex justify-between">
+              <span className="text-white/30">→ quoteMint</span>
+              <span className="text-white/40">~market rate (DBC L1)</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-white/30">→ DontLeak</span>
+              <span className="text-red-400/70">~market rate (DBC L2)</span>
+            </div>
+          </>
         )}
         <div className="pt-1 text-white/20 text-[10px]">
-          {isLeak ? "2 txs: Jupiter Ultra SOL→LEAK, DBC LEAK→quoteMint" : "3 txs: Jupiter Ultra SOL→LEAK, DBC LEAK→quote, DBC quote→DontLeak"}
+          {isLeak ? "1 tx: Jupiter Ultra SOL→LEAK — hold to vote & decrypt" : "3 txs: Jupiter Ultra SOL→LEAK, DBC LEAK→quote, DBC quote→DontLeak"}
         </div>
       </div>
 

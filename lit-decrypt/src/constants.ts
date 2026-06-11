@@ -23,17 +23,16 @@ export const POOL1_INITIAL_FEE_BPS = 9900;  // 99 %
 export const POOL1_BASELINE_FEE_BPS = 100;  // 1 %
 export const POOL1_FEE_DECAY_SLOTS = 500;   // ~200 s decay window
 
-// Meteora DBC pool account layout (Anchor, discriminator at [0..8])
-// Offsets verified against the Meteora DBC IDL v0.5:
-//   discriminator [0..8]
-//   quote_mint    [8..40]
-//   base_mint     [40..72]
-//   config        [72..104]
-//   creator       [104..136]
-//   base_vault    [136..168]
-//   quote_vault   [168..200]
-export const DBC_POOL_BASE_VAULT_OFFSET = 136;
-export const DBC_POOL_QUOTE_VAULT_OFFSET = 168;
+// Meteora DBC VirtualPool account layout (from the SDK's Anchor IDL):
+//   discriminator      [0..8]
+//   volatility_tracker [8..72]
+//   config             [72..104]
+//   creator            [104..136]
+//   base_mint          [136..168]
+//   base_vault         [168..200]
+//   quote_vault        [200..232]
+export const DBC_POOL_BASE_VAULT_OFFSET = 168;
+export const DBC_POOL_QUOTE_VAULT_OFFSET = 200;
 
 // ---- Pool 1 (Leak / rfstacc) bonding-curve params ----
 // Binding target = 10 000 rfstacc (quote reserve at graduation).
