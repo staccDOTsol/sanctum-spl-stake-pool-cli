@@ -10,6 +10,7 @@
  */
 import { useState, useEffect } from "react";
 import { litAuthMessage, makeAuthSig, type EncryptedPayload } from "@/lib/litConditions";
+import { connectWallet, type WalletProvider } from "@/lib/deploy/wallet";
 
 interface Props {
   encryptedPayloadUrl?: string;
@@ -92,36 +93,23 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
       }
       if (payload.contentType) setMime(payload.contentType);
 
-      // 2. Sign auth message browser-side (wallet stays on device)
+      // 2. Sign auth message browser-side (wallet stays on device).
+      // connectWallet handles Phantom and Solflare (incl. Solflare's delayed
+      // publicKey population) and prompts the connect dialog if needed.
       setState("signing");
-      type SignMessageWallet = {
-        publicKey?: { toBase58?: () => string } | null;
-        connect?: () => Promise<unknown>;
-        signMessage: (m: Uint8Array, e?: string) => Promise<{ signature: Uint8Array } | Uint8Array>;
-      };
-      const w = window as unknown as { solana?: SignMessageWallet; solflare?: SignMessageWallet };
-      const wallet =
-        (w.solana?.publicKey?.toBase58?.() && w.solana) ||
-        (w.solflare?.publicKey?.toBase58?.() && w.solflare) ||
-        w.solana || w.solflare;
-      if (!wallet) throw new Error("No Solana wallet found — install Phantom or Solflare");
-      if (!wallet.publicKey?.toBase58?.()) {
-        try {
-          await wallet.connect?.();
-        } catch {
-          throw new Error("Connect your Solana wallet first");
-        }
+      let wallet: WalletProvider;
+      try {
+        wallet = await connectWallet();
+      } catch (e) {
+        throw new Error(e instanceof Error ? e.message : "Connect your Solana wallet first");
       }
-      const pubkey = wallet.publicKey?.toBase58?.();
-      if (!pubkey) throw new Error("Connect your Solana wallet first");
+      const pubkey = wallet.publicKey.toBase58();
 
       // Lit nodes verify an ed25519 signature (hex) over the canonical body
       const message  = litAuthMessage();
-      const msgBytes = new TextEncoder().encode(message);
       let sigBytes: Uint8Array;
       try {
-        const signed = await wallet.signMessage(msgBytes, "utf8");
-        sigBytes = signed instanceof Uint8Array ? signed : signed.signature;
+        sigBytes = await wallet.signMessage(new TextEncoder().encode(message));
       } catch (e) {
         throw new Error(`Wallet signing failed: ${e instanceof Error ? e.message : e}`);
       }

@@ -8,25 +8,36 @@ export type WalletProvider = {
   publicKey: PublicKey;
   signTransaction: (tx: Transaction | VersionedTransaction) => Promise<Transaction | VersionedTransaction>;
   signAllTransactions: (txs: (Transaction | VersionedTransaction)[]) => Promise<(Transaction | VersionedTransaction)[]>;
+  signMessage: (message: Uint8Array) => Promise<Uint8Array>;
 };
+
+// Phantom returns { signature }, Solflare (and some others) may return the
+// raw bytes — normalize to Uint8Array.
+type SignMessageResult = { signature: Uint8Array } | Uint8Array;
+function normalizeSignature(res: SignMessageResult): Uint8Array {
+  return res instanceof Uint8Array ? res : res.signature;
+}
 
 // Local types only — avoid global Window augmentation which conflicts with
 // @walletconnect/ethereum-provider (via Lit) declaring window.solana as any.
 type SolanaWallet = {
   publicKey: { toBase58(): string } | null;
   isPhantom?: boolean;
+  isSolflare?: boolean;
   connect: (opts?: { onlyIfTrusted?: boolean }) => Promise<{ publicKey: { toBase58(): string } }>;
   disconnect: () => Promise<void>;
   signTransaction: (tx: Transaction | VersionedTransaction) => Promise<Transaction | VersionedTransaction>;
   signAllTransactions: (txs: (Transaction | VersionedTransaction)[]) => Promise<(Transaction | VersionedTransaction)[]>;
+  signMessage: (message: Uint8Array, encoding?: string) => Promise<SignMessageResult>;
 };
 type SolflareWallet = {
   publicKey: { toBase58(): string } | null;
   isSolflare?: boolean;
-  connect: () => Promise<void>;
+  connect: () => Promise<void | boolean>;
   disconnect: () => Promise<void>;
   signTransaction: (tx: Transaction | VersionedTransaction) => Promise<Transaction | VersionedTransaction>;
   signAllTransactions: (txs: (Transaction | VersionedTransaction)[]) => Promise<(Transaction | VersionedTransaction)[]>;
+  signMessage: (message: Uint8Array, encoding?: string) => Promise<SignMessageResult>;
 };
 type WalletWindow = { solana?: SolanaWallet; solflare?: SolflareWallet };
 
@@ -37,8 +48,10 @@ function walletWindow(): WalletWindow {
 export function detectWallet(): "phantom" | "solflare" | "none" {
   if (typeof window === "undefined") return "none";
   const w = walletWindow();
-  if (w.solana?.isPhantom)   return "phantom";
+  if (w.solana?.isPhantom)    return "phantom";
   if (w.solflare?.isSolflare) return "solflare";
+  // Solflare's "set as default" mode injects window.solana with isSolflare —
+  // it mimics the Phantom API, so the generic window.solana path handles it.
   if (w.solana)               return "phantom";
   return "none";
 }
@@ -52,22 +65,32 @@ export async function connectWallet(): Promise<WalletProvider> {
   const w = walletWindow();
 
   if (type === "solflare" && w.solflare) {
-    await w.solflare.connect();
-    const pkStr = w.solflare.publicKey?.toBase58();
+    const sf = w.solflare;
+    await sf.connect();
+    // Solflare can resolve connect() before publicKey is populated — wait
+    // briefly instead of failing the init.
+    let pkStr = sf.publicKey?.toBase58();
+    for (let i = 0; !pkStr && i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      pkStr = sf.publicKey?.toBase58();
+    }
     if (!pkStr) throw new Error("Solflare connection failed");
     return {
       publicKey:          new PublicKey(pkStr),
-      signTransaction:    (tx) => w.solflare!.signTransaction(tx),
-      signAllTransactions:(txs) => w.solflare!.signAllTransactions(txs),
+      signTransaction:    (tx) => sf.signTransaction(tx),
+      signAllTransactions:(txs) => sf.signAllTransactions(txs),
+      signMessage:        async (m) => normalizeSignature(await sf.signMessage(m, "utf8")),
     };
   }
 
-  const resp  = await w.solana!.connect();
+  const sol   = w.solana!;
+  const resp  = await sol.connect();
   const pkStr = resp.publicKey.toBase58();
   return {
     publicKey:          new PublicKey(pkStr),
-    signTransaction:    (tx) => w.solana!.signTransaction(tx),
-    signAllTransactions:(txs) => w.solana!.signAllTransactions(txs),
+    signTransaction:    (tx) => sol.signTransaction(tx),
+    signAllTransactions:(txs) => sol.signAllTransactions(txs),
+    signMessage:        async (m) => normalizeSignature(await sol.signMessage(m, "utf8")),
   };
 }
 
