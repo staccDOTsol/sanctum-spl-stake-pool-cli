@@ -29,8 +29,7 @@ import type { ContentEntry, PoolType } from "../../../../lib/types";
 export const runtime   = "nodejs";
 export const dynamic   = "force-dynamic";
 
-const RPC = process.env.SOLANA_RPC_URL
-  ?? "https://mainnet.helius-rpc.com/?api-key=d1c96b01-1c06-4d46-9b69-57e7260fb9d8";
+const RPC = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
 
 const DBC_PROGRAM      = new PublicKey("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN");
 const CONFIG_OFFSET    = 72;
