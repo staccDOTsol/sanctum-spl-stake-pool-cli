@@ -2,10 +2,14 @@
   "name": "web",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "next dev --webpack",
     "build": "next build --webpack",
-    "start": "next start"
+    "start": "next start",
+    "postinstall": "node scripts/fix-lit-contracts-exports.mjs"
   },
   "dependencies": {
     "@lit-protocol/constants": "^9.0.1",
