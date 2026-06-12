@@ -64,6 +64,12 @@ async function ultraExecute(signedTxBase64: string, requestId: string): Promise<
 }
 
 async function ultraSwap(order: UltraOrder, wallet: WalletProvider): Promise<string> {
+  // Ultra returns an order without a transaction when the taker can't cover
+  // amount + fees (or no route) — deserializing nothing throws the cryptic
+  // "Reached end of buffer unexpectedly".
+  if (!order.transaction) {
+    throw new Error("Jupiter returned no transaction — check the wallet's SOL balance covers the amount plus fees");
+  }
   const vTx    = VersionedTransaction.deserialize(Buffer.from(order.transaction, "base64"));
   const signed = await wallet.signTransaction(vTx) as VersionedTransaction;
   return ultraExecute(Buffer.from(signed.serialize()).toString("base64"), order.requestId);

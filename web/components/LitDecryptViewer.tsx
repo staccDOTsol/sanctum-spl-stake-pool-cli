@@ -24,7 +24,7 @@ interface Props {
 
 type DecryptState = "idle" | "connecting" | "signing" | "decrypting" | "done" | "error";
 
-interface TierStatus { index: number; unlocked: boolean }
+interface TierStatus { index: number; unlocked: boolean; data?: string }
 
 function formatBytes(n: number) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)} MB`;
@@ -53,6 +53,8 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
   const [mime, setMime]           = useState<string | null>(null);
   // Tiered payloads: per-chunk lock state from the Lit nodes
   const [tiers, setTiers]         = useState<TierStatus[] | null>(null);
+  // image-strips mode: object URLs per strip (null = locked)
+  const [stripUrls, setStripUrls] = useState<(string | null)[] | null>(null);
 
   const isTiered = tiers !== null;
   // Tiered: the unlocked prefix IS the revealed amount (Lit-enforced).
@@ -161,11 +163,22 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
 
       const result = await decryptRes.json() as {
         data: string;
+        mode?: "bytes" | "image-strips";
         chunks?: TierStatus[];
         unlockedBytes?: number;
       };
       setDecrypted(new Uint8Array(Buffer.from(result.data, "base64")));
       setTiers(result.chunks ?? null);
+      if (result.mode === "image-strips" && result.chunks) {
+        const mimeType = payload.contentType || "image/png";
+        setStripUrls(result.chunks.map((c) =>
+          c.unlocked && c.data
+            ? URL.createObjectURL(new Blob([Buffer.from(c.data, "base64")], { type: mimeType }))
+            : null,
+        ));
+      } else {
+        setStripUrls(null);
+      }
       setState("done");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Decryption failed");
@@ -219,7 +232,28 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
         {tierBar}
 
         {/* Content */}
-        {textPreview !== null ? (
+        {stripUrls ? (
+          // image-strips: stack the unlocked crops top-to-bottom; locked
+          // strips render as hatched placeholder rows
+          <div className="rounded-xl overflow-hidden border border-white/8">
+            {stripUrls.map((url, i) =>
+              url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img key={i} src={url} alt={`Decrypted strip ${i + 1}`} className="w-full block" />
+              ) : (
+                <div
+                  key={i}
+                  className="w-full h-12 flex items-center justify-center text-[10px] font-mono text-red-400/40"
+                  style={{
+                    backgroundImage: `repeating-linear-gradient(45deg, rgba(239,68,68,0.06), rgba(239,68,68,0.06) 4px, transparent 4px, transparent 12px)`,
+                  }}
+                >
+                  🔒 tier {i + 1} locked — market hasn&apos;t unlocked this strip
+                </div>
+              ),
+            )}
+          </div>
+        ) : textPreview !== null ? (
           <div className="relative">
             <pre className="p-4 rounded-xl bg-white/3 border border-white/8 text-white/70 text-xs font-mono leading-relaxed overflow-auto max-h-64 whitespace-pre-wrap break-words">
               {textPreview || <span className="text-white/20">[no content revealed yet — buy Leak]</span>}

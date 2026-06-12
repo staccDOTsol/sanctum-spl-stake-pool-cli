@@ -11,6 +11,16 @@ import type { ContentEntry } from "./types";
 const REGISTRY_PATH = "registry/index.json";
 const B2_TOKEN      = process.env.B2_READ_WRITE_TOKEN ?? process.env.BLOB_READ_WRITE_TOKEN;
 
+// Permanently hidden entries: datil-era ciphertexts (network sunset —
+// unrecoverable) and pools created with the broken micro-curve config.
+// Extend without code changes via REGISTRY_BLACKLIST=id1,id2,…
+const BLACKLIST = new Set([
+  "user-1780960638184-elylm4", // Memes — datil ciphertext, undecryptable
+  "user-1780962748533-ur3d3s", // Memery — datil ciphertext, undecryptable
+  "user-1781247483022-zzoiu4", // staccana 4 eva — broken micro-curve pool (6033)
+  ...(process.env.REGISTRY_BLACKLIST ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+]);
+
 let _cache: ContentEntry[] | null = null;
 let _cacheTime = 0;
 const CACHE_TTL = 30_000;
@@ -41,7 +51,7 @@ async function saveToBlob(entries: ContentEntry[]): Promise<void> {
 
 export async function getRegistry(): Promise<ContentEntry[]> {
   if (_cache && Date.now() - _cacheTime < CACHE_TTL) return _cache;
-  const entries = await loadFromBlob();
+  const entries = (await loadFromBlob()).filter((e) => !BLACKLIST.has(e.id));
   _cache     = entries;
   _cacheTime = Date.now();
   return entries;

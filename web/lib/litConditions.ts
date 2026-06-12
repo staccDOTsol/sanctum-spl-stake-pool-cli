@@ -143,8 +143,17 @@ export function tierConditions(i: number, p: TierParams): ConditionSet {
   ];
 }
 
-/** Chunking policy: ~16 KiB chunks, between 4 and 12 of them. */
-export function chunkCountFor(totalBytes: number): number {
+/**
+ * Chunking policy. Default: ~16 KiB chunks, 4–12 of them. A specific tier
+ * count can be requested (launch form / API), clamped to LIT_MAX_TIERS
+ * (default 64): every tier costs one TEE encrypt at upload and one TEE
+ * decrypt per view, so tier count scales credits + action time linearly.
+ */
+export function chunkCountFor(totalBytes: number, requested?: number): number {
+  const max = Number(process.env.LIT_MAX_TIERS ?? 64);
+  if (requested && Number.isFinite(requested) && requested > 0) {
+    return Math.max(2, Math.min(Math.floor(requested), max));
+  }
   return Math.max(4, Math.min(12, Math.ceil(totalBytes / 16_384)));
 }
 
@@ -160,9 +169,12 @@ export function tierThresholds(
   p: { l1BaselineRaw: bigint; l2QuoteUnitRaw: bigint; chunkCount: number },
 ): { floor?: string; ceiling?: string } {
   if (i === 0) return {};
+  // Exponents are capped so high tier counts can't overflow doubles
+  // (1.15^i) or produce astronomically meaningless BigInt ceilings (2^K).
   const base  = Number(p.l1BaselineRaw < 1n ? 1n : p.l1BaselineRaw);
-  const floor = BigInt(Math.ceil(base * Math.pow(LEAK_GROWTH_PER_TIER, i))).toString();
-  const ceiling = (SUPPRESS_BASE_UNITS * p.l2QuoteUnitRaw * (1n << BigInt(p.chunkCount - 1 - i))).toString();
+  const floor = BigInt(Math.ceil(base * Math.pow(LEAK_GROWTH_PER_TIER, Math.min(i, 200)))).toString();
+  const ceilExp = BigInt(Math.min(p.chunkCount - 1 - i, 24));
+  const ceiling = (SUPPRESS_BASE_UNITS * p.l2QuoteUnitRaw * (1n << ceilExp)).toString();
   return { floor, ceiling };
 }
 
@@ -215,6 +227,13 @@ export interface ChipotlePayload {
   contentType:  string;
   filename?:    string;
   totalBytes:   number;
+  /**
+   * "bytes" (default): chunks are byte ranges; reveal = contiguous prefix.
+   * "image-strips": chunks are horizontal crops of the image, top to
+   * bottom — each strip is a complete, independently renderable image
+   * (byte-prefixes of PNG/WebP don't render at all).
+   */
+  mode?:        "bytes" | "image-strips";
   l1QuoteVault: string;
   l2QuoteVault: string;
   chunks:       ChipotleChunk[];

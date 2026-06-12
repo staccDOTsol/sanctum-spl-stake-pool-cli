@@ -50,6 +50,7 @@ export async function POST(req: NextRequest) {
     const l2Pool    = formData.get("l2Pool") as string | null;
     const quoteMint = formData.get("quoteMint") as string | null;
     const l1Pool    = (formData.get("l1Pool") as string | null) || DEFAULT_L1_POOL;
+    const tiersReq  = Number(formData.get("tiers") ?? "") || undefined;
     if (!file) return NextResponse.json({ error: "file required" }, { status: 400 });
     if (!l2Pool || !quoteMint) {
       return NextResponse.json({ error: "l2Pool and quoteMint required (tiered encryption is bound to the content pool)" }, { status: 400 });
@@ -73,8 +74,51 @@ export async function POST(req: NextRequest) {
     const quoteDecimals: number =
       (qData && "parsed" in qData ? qData.parsed?.info?.decimals : undefined) ?? 9;
 
-    const chunkCount = chunkCountFor(rawBytes.length);
-    const chunkSize  = Math.ceil(rawBytes.length / chunkCount);
+    // Image content is tiered as horizontal CROPS (top→bottom), one
+    // complete renderable image per ladder window — byte-prefixes of
+    // PNG/WebP render nothing. Everything else is byte-range chunks.
+    let mode: "bytes" | "image-strips" = "bytes";
+    let parts: { offset: number; bytes: Uint8Array }[] = [];
+    if (contentType.startsWith("image/") && !contentType.includes("svg")) {
+      try {
+        const sharp = (await import("sharp")).default;
+        const img   = sharp(Buffer.from(rawBytes), { animated: false });
+        const meta  = await img.metadata();
+        const w = meta.width ?? 0, h = meta.height ?? 0;
+        if (w > 0 && h > 1) {
+          const stripCount = Math.min(chunkCountFor(rawBytes.length, tiersReq), h);
+          const fmt: "png" | "jpeg" | "webp" =
+            contentType.includes("jpeg") || contentType.includes("jpg") ? "jpeg"
+            : contentType.includes("webp") ? "webp" : "png";
+          const stripH = Math.ceil(h / stripCount);
+          parts = await Promise.all(
+            Array.from({ length: stripCount }, async (_, i) => {
+              const top    = i * stripH;
+              const height = Math.min(stripH, h - top);
+              const bytes  = await sharp(Buffer.from(rawBytes))
+                .extract({ left: 0, top, width: w, height })
+                .toFormat(fmt)
+                .toBuffer();
+              return { offset: top, bytes: new Uint8Array(bytes) };
+            }),
+          );
+          mode = "image-strips";
+        }
+      } catch (e) {
+        console.warn("[/api/lit/encrypt] image strip slicing failed, falling back to bytes:", e);
+        parts = [];
+      }
+    }
+    if (parts.length === 0) {
+      const chunkCount = chunkCountFor(rawBytes.length, tiersReq);
+      const chunkSize  = Math.ceil(rawBytes.length / chunkCount);
+      for (let i = 0; i < chunkCount; i++) {
+        const offset = i * chunkSize;
+        parts.push({ offset, bytes: rawBytes.subarray(offset, Math.min(offset + chunkSize, rawBytes.length)) });
+      }
+    }
+
+    const chunkCount = parts.length;
     const ladder = {
       l1BaselineRaw:  l1.raw,
       l2QuoteUnitRaw: 10n ** BigInt(quoteDecimals),
@@ -82,20 +126,15 @@ export async function POST(req: NextRequest) {
     };
 
     // Build sealed envelopes: thresholds travel INSIDE the ciphertext.
-    const slices: { offset: number; length: number }[] = [];
-    const messages: string[] = [];
-    for (let i = 0; i < chunkCount; i++) {
-      const offset = i * chunkSize;
-      const slice  = rawBytes.subarray(offset, Math.min(offset + chunkSize, rawBytes.length));
+    const messages: string[] = parts.map((part, i) => {
       const { floor, ceiling } = tierThresholds(i, ladder);
-      slices.push({ offset, length: slice.length });
-      messages.push(JSON.stringify({
+      return JSON.stringify({
         i,
         ...(floor   ? { fl: floor,   l1v: l1.vault }     : {}),
         ...(ceiling ? { ce: ceiling, l2v: l2QuoteVault } : {}),
-        data: Buffer.from(slice).toString("base64"),
-      }));
-    }
+        data: Buffer.from(part.bytes).toString("base64"),
+      });
+    });
 
     const { pkpId } = litEnv();
     const { ciphertexts } = await runLadderAction<{ ciphertexts: string[] }>({
@@ -108,7 +147,7 @@ export async function POST(req: NextRequest) {
     }
 
     const chunks: ChipotleChunk[] = ciphertexts.map((ciphertext, i) => ({
-      index: i, offset: slices[i].offset, length: slices[i].length, ciphertext,
+      index: i, offset: parts[i].offset, length: parts[i].bytes.length, ciphertext,
     }));
 
     const payload: ChipotlePayload = {
@@ -116,6 +155,7 @@ export async function POST(req: NextRequest) {
       contentType,
       filename:     file.name,
       totalBytes:   rawBytes.length,
+      mode,
       l1QuoteVault: l1.vault,
       l2QuoteVault,
       chunks,
