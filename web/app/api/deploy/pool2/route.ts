@@ -115,12 +115,18 @@ export async function POST(req: NextRequest) {
       uri:              string;
       curve?:           "stable" | "meme" | "dontleak";
       baseDecimals?:    number;
+      feeClaimer?:      string; // bounty mode: route fees to the secret wallet
     };
-    const { payer, configPubkey, basePubkey, quoteMintAddress, name, symbol, uri, curve = "stable", baseDecimals = 6 } = body;
+    const { payer, configPubkey, basePubkey, quoteMintAddress, name, symbol, uri, curve = "stable", baseDecimals = 6, feeClaimer } = body;
 
     if (!payer || !configPubkey || !basePubkey || !quoteMintAddress || !name || !symbol || !uri) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
+
+    // Partner fees (and migration leftover) accrue to feeClaimer. Bounty
+    // launches point this at the generated secret wallet so the pot the
+    // crowd pays into is claimable only by whoever cracks the key.
+    const feeReceiver = feeClaimer || payer;
 
     const quoteMint = new PublicKey(quoteMintAddress);
     const conn      = new Connection(RPC_URL, "confirmed");
@@ -139,8 +145,8 @@ export async function POST(req: NextRequest) {
 
     const rawTx = await client.partner.createConfigAndPool({
       config:           configPubkey,
-      feeClaimer:       payer,
-      leftoverReceiver: payer,
+      feeClaimer:       feeReceiver,
+      leftoverReceiver: feeReceiver,
       quoteMint:        quoteMint.toBase58(),
       payer,
       preCreatePoolParam: {

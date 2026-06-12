@@ -11,6 +11,7 @@ import { getMockSnapshot } from "@/lib/mockRatio";
 import RatioBar from "@/components/RatioBar";
 import SwapWidget from "@/components/SwapWidget";
 import LitDecryptViewer from "@/components/LitDecryptViewer";
+import BountyPot from "@/components/BountyPot";
 import Link from "next/link";
 
 export const revalidate = 15;
@@ -66,6 +67,16 @@ export default async function ContentDetailPage({ params }: { params: Promise<{ 
           <p className="text-white/50 text-sm leading-relaxed max-w-lg">{entry.description}</p>
         )}
       </div>
+
+      {/* Bounty pot */}
+      {entry.isBounty && entry.bountyPubkey && (
+        <BountyPot
+          leakPool={entry.leakPoolAddress}
+          dontLeakPool={entry.dontLeakPoolAddress}
+          bountyPubkey={entry.bountyPubkey}
+          quoteDecimals={entry.poolType === "stable" ? 9 : 6}
+        />
+      )}
 
       {/* Live ratio card */}
       <div className="rounded-2xl border border-white/8 bg-[#13131a] p-6 mb-6">

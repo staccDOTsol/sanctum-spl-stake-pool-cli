@@ -26,6 +26,8 @@ export async function POST(req: NextRequest) {
       metadataUrl:         body.metadataUrl,
       poolType:            body.poolType ?? "stable",
       quoteMint:           body.quoteMint,
+      isBounty:            !!body.isBounty,
+      bountyPubkey:        body.bountyPubkey,
     };
 
     if (!entry.dontLeakPoolAddress) {

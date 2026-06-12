@@ -68,6 +68,12 @@ const POOL_TYPES: { id: PoolTypeChoice; label: string; sub: string; accent: stri
     sub:    "Quote $stacccana (73edX6xo…pump) → bonds to LEAK. 1B market cap to fully bond.",
     accent: "purple",
   },
+  {
+    id:     "bounty",
+    label:  "🏴 Bounty (capture-the-key)",
+    sub:    "We mint a fresh wallet. Its private key IS the secret. Both pools' fees pool into it. First to reveal + reconstruct the key sweeps the pot. No file needed.",
+    accent: "green",
+  },
 ];
 
 export default function LaunchPage() {
@@ -102,22 +108,36 @@ export default function LaunchPage() {
 
     try {
       const conn = new Connection(RPC, "confirmed");
+      const isBounty = poolType === "bounty";
 
       // All keypairs + BOTH pool addresses first: encryption binds to this
       // content's own vault pair, derivable before anything is broadcast.
-      const prepared = await prepareDeployment(poolType);
+      // Bounty mode also mints the secret wallet whose key IS the content.
+      const prepared = await prepareDeployment(poolType, isBounty);
       addLog(`Leak pool:     ${prepared.leakPool.slice(0, 12)}…`);
       addLog(`DontLeak pool: ${prepared.dontLeakPool.slice(0, 12)}…`);
+      if (isBounty) addLog(`🏴 Bounty wallet: ${prepared.bountyKp!.publicKey.toBase58().slice(0, 12)}… — fees pool here`);
+
+      // Bounty mode: the content is the secret wallet's base58 private key.
+      // Encrypt it as a text blob; whoever reconstructs it claims the pot.
+      const encryptFile: File | null = isBounty
+        ? new File([prepared.bountySecret!], "secret.key.txt", { type: "text/plain" })
+        : form.file;
 
       let fileUrl = "";
-      if (form.file) {
-        addLog(`Encrypting ${form.file.name} in tiered chunks (Lit TEE)…`);
+      if (encryptFile) {
+        addLog(isBounty
+          ? "Encrypting the secret key in tiered chunks (Lit TEE)…"
+          : `Encrypting ${encryptFile.name} in tiered chunks (Lit TEE)…`);
         const fd = new FormData();
-        fd.append("file", form.file);
+        fd.append("file", encryptFile);
         fd.append("leakPool", prepared.leakPool);
         fd.append("leakMint", prepared.leakMintKp.publicKey.toBase58());
         fd.append("dontLeakPool", prepared.dontLeakPool);
         fd.append("baseMint", prepared.dontLeakKp.publicKey.toBase58());
+        // Bounty: max tiers — every byte of the key is its own threshold, so
+        // the reveal frontier maps directly to crackable entropy.
+        if (isBounty) fd.append("tiers", "88");
         const encRes = await fetch("/api/lit/encrypt", { method: "POST", body: fd });
         if (!encRes.ok) {
           const { error } = await encRes.json().catch(() => ({ error: "Encryption failed" }));
@@ -127,13 +147,13 @@ export default function LaunchPage() {
         addLog(`✓ ${encrypted.chunks?.length ?? 1} encrypted tiers, ratio enforced by Lit`);
         const payloadJson = JSON.stringify(encrypted);
         const payloadFile = new File([payloadJson], "encrypted-payload.json", { type: "application/json" });
-        const pathname    = `content/${Date.now()}-${form.file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}.enc.json`;
+        const pathname    = `content/${Date.now()}-${(encryptFile.name).replace(/[^a-zA-Z0-9._-]/g, "_")}.enc.json`;
         fileUrl = await blobUpload(pathname, payloadFile);
         addLog(`Encrypted & uploaded: ${fileUrl.slice(0, 60)}…`);
       }
 
       const slug       = form.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24);
-      const totalBytes = form.file?.size ?? 0;
+      const totalBytes = encryptFile?.size ?? 0;
 
       // Token metadata for BOTH tokens
       const mkMeta = async (kind: "Leak" | "DontLeak", symbol: string) => {
@@ -178,6 +198,7 @@ export default function LaunchPage() {
         uri:       leakMeta,
         curve:     poolType === "stable" ? "stable" : "meme",
         baseDecimals: 6, // LEAK_content is 6-dec (curve-builder precision)
+        feeClaimer: prepared.bountyKp?.publicKey.toBase58(), // bounty: pot → secret wallet
       });
       addLog(`✓ Leak pool live  (${poolA.sig.slice(0, 16)}…)`);
 
@@ -192,6 +213,7 @@ export default function LaunchPage() {
         uri:       dlMeta,
         curve:     "dontleak", // 16M/16B in LEAK_content units → ~490M LEAK to fully suppress
         baseDecimals: 9,
+        feeClaimer: prepared.bountyKp?.publicKey.toBase58(), // bounty: pot → secret wallet
       });
       addLog(`✓ DontLeak pool live  (${poolB.sig.slice(0, 16)}…)`);
 
@@ -217,7 +239,6 @@ export default function LaunchPage() {
         body: JSON.stringify({
           title:               form.title,
           description:         form.description,
-          contentType:         form.contentType,
           leakPoolAddress:     prepared.leakPool,
           dontLeakPoolAddress: prepared.dontLeakPool,
           leakMint:            prepared.leakMintKp.publicKey.toBase58(),
@@ -228,6 +249,9 @@ export default function LaunchPage() {
           encryptedPayloadUrl: fileUrl,
           metadataUrl:         metaUrl,
           creator:             wallet!.publicKey.toBase58(),
+          isBounty:            !!prepared.bountyKp,
+          bountyPubkey:        prepared.bountyKp?.publicKey.toBase58(),
+          contentType:         prepared.bountyKp ? "text/plain" : form.contentType,
         }),
       });
       if (!regRes.ok) throw new Error((await regRes.json().catch(() => ({ error: "Registration failed" }))).error);
@@ -349,33 +373,48 @@ export default function LaunchPage() {
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-white/70 mb-1.5">
-              File <span className="text-white/30">(optional — will be encrypted)</span>
-            </label>
-            <input
-              ref={fileRef}
-              type="file"
-              onChange={e => {
-                const file = e.target.files?.[0] ?? null;
-                // contentType auto-detected from the upload; "text" when no file
-                setForm(f => ({ ...f, file, contentType: file ? detectMime(file) : "text" }));
-              }}
-              className="hidden"
-            />
-            <button
-              type="button"
-              onClick={() => fileRef.current?.click()}
-              className="w-full py-6 rounded-xl border-2 border-dashed border-white/10 hover:border-green-500/30 text-white/40 hover:text-white/60 text-sm transition-colors"
-            >
-              {form.file ? `${form.file.name} (${(form.file.size / 1024).toFixed(1)} KB)` : "Click to choose file"}
-            </button>
-            {form.file && (
-              <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 border border-white/8 text-xs font-mono text-white/50">
-                detected type: <span className="text-green-400/80">{form.contentType}</span>
-              </div>
-            )}
-          </div>
+          {poolType === "bounty" ? (
+            <div className="p-4 rounded-xl border border-green-500/25 bg-green-500/8 text-sm text-white/70 space-y-2">
+              <div className="font-bold text-green-400">🏴 Bounty mode — no file needed</div>
+              <p className="text-white/60 leading-relaxed">
+                We generate a brand-new Solana wallet right now, in your browser. Its
+                base58 private key becomes the encrypted secret. Both bonding curves&apos;
+                trading fees pool into that wallet. The market reveals the key byte by
+                byte; the first person to reveal enough and reconstruct it sweeps the pot.
+              </p>
+              <p className="text-amber-400/80 text-xs">
+                The bounty wallet is meant to be cracked — never send anything to it you
+                want to keep. Its key is shown to you once on the next screen.
+              </p>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-sm font-medium text-white/70 mb-1.5">
+                File <span className="text-white/30">(optional — will be encrypted)</span>
+              </label>
+              <input
+                ref={fileRef}
+                type="file"
+                onChange={e => {
+                  const file = e.target.files?.[0] ?? null;
+                  setForm(f => ({ ...f, file, contentType: file ? detectMime(file) : "text" }));
+                }}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                className="w-full py-6 rounded-xl border-2 border-dashed border-white/10 hover:border-green-500/30 text-white/40 hover:text-white/60 text-sm transition-colors"
+              >
+                {form.file ? `${form.file.name} (${(form.file.size / 1024).toFixed(1)} KB)` : "Click to choose file"}
+              </button>
+              {form.file && (
+                <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 border border-white/8 text-xs font-mono text-white/50">
+                  detected type: <span className="text-green-400/80">{form.contentType}</span>
+                </div>
+              )}
+            </div>
+          )}
 
           <button type="submit" className="w-full py-3 rounded-xl bg-green-500 hover:bg-green-400 text-black font-bold text-sm transition-colors">
             Deploy {chosenType.label} Pool →

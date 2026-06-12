@@ -54,6 +54,10 @@ export interface ContentEntry {
   thumbnailDataUrl?: string;
   /** URL to the encrypted payload JSON (IPFS / Arweave) */
   encryptedPayloadUrl?: string;
+  /** Bounty mode: the secret is this wallet's private key; both pools' fees
+   *  accrue to it. Crack the key → claim the pot. */
+  isBounty?: boolean;
+  bountyPubkey?: string;
   createdAt: number; // unix ms
   creator?: string;
   creatorAddress?: string;
