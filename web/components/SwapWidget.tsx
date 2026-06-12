@@ -159,7 +159,14 @@ async function dbcSwap(
       if (remaining <= BigInt(0)) {
         throw new Error("This bonding curve is fully bonded — no curve liquidity left to buy");
       }
-      if (safeIn > remaining) safeIn = remaining;
+      // 1% margin: trading fees/rounding mean the curve absorbs slightly
+      // less than (threshold − reserve); an exact-capacity input overflows
+      // by dust ("Not enough liquidity … amountLeft: <tiny>").
+      const safeRemaining = (remaining * BigInt(99)) / BigInt(100);
+      if (safeRemaining <= BigInt(0)) {
+        throw new Error("This bonding curve is effectively full — only dust capacity remains");
+      }
+      if (safeIn > safeRemaining) safeIn = safeRemaining;
     }
   }
 
