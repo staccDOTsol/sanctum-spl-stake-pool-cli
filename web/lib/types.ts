@@ -1,5 +1,20 @@
-export type ContentType = "png" | "jpeg" | "text" | "audio" | "video";
+/**
+ * Content type: a real MIME type ("image/png", "audio/mpeg", …) for new
+ * uploads; legacy entries may carry form values ("png", "jpeg", "text", …).
+ */
+export type ContentType = string;
+export type ContentCategory = "text" | "image" | "audio" | "video" | "other";
 export type PoolType   = "stable" | "meme" | "quota";
+
+/** Map a MIME type or legacy form value to a coarse category. */
+export function contentCategory(t: string | undefined): ContentCategory {
+  const v = (t ?? "").toLowerCase();
+  if (v.includes("image") || v === "png" || v === "jpeg" || v === "jpg" || v === "gif" || v === "webp") return "image";
+  if (v.includes("audio")) return "audio";
+  if (v.includes("video")) return "video";
+  if (v.includes("text") || v === "" || v === "json" || v.includes("document") || v.includes("pdf")) return "text";
+  return "other";
+}
 
 export type ContentTag =
   | "Hot"

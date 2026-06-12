@@ -13,7 +13,10 @@ interface Props {
 }
 
 function typeIcon(t: string) {
-  if (t === "png" || t === "jpeg") return "🖼";
+  const v = t.toLowerCase();
+  if (v.includes("image") || v === "png" || v === "jpeg") return "🖼";
+  if (v.includes("audio")) return "🎵";
+  if (v.includes("video")) return "🎬";
   return "📄";
 }
 

@@ -69,12 +69,12 @@ const COMMON_MIGRATION = {
   migratedPoolFee:    undefined,
 };
 
-function buildStableConfig() {
+function buildStableConfig(quoteDecimals: number) {
   return buildCurveWithMarketCap({
     token: {
       tokenType:            TokenType.Token2022,
       tokenBaseDecimal:     9,
-      tokenQuoteDecimal:    9, // LEAK = 9 decimals
+      tokenQuoteDecimal:    quoteDecimals, // fetched on-chain (LEAK/rfstacc = 9)
       tokenAuthorityOption: TokenAuthorityOption.Immutable,
       totalTokenSupply:     1_000_000_000,
       leftover:             0,
@@ -99,12 +99,12 @@ function buildStableConfig() {
   });
 }
 
-function buildMemeConfig() {
+function buildMemeConfig(quoteDecimals: number) {
   return buildCurveWithMarketCap({
     token: {
       tokenType:            TokenType.Token2022,
       tokenBaseDecimal:     9,
-      tokenQuoteDecimal:    6, // pump.fun = 6 decimals
+      tokenQuoteDecimal:    quoteDecimals, // fetched on-chain (GNcib = 6)
       tokenAuthorityOption: TokenAuthorityOption.Immutable,
       totalTokenSupply:     1_000_000_000,
       leftover:             0,
@@ -150,16 +150,24 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    const quoteMint   = QUOTE_MINTS[poolType] ?? QUOTE_MINTS.stable;
-    const configParam = poolType === "meme" ? buildMemeConfig() : buildStableConfig();
+    const quoteMint = QUOTE_MINTS[poolType] ?? QUOTE_MINTS.stable;
 
     const conn    = new Connection(RPC_URL, "confirmed");
     const client  = DynamicBondingCurveClient.create(conn, "confirmed");
     const payerPk = new PublicKey(payer);
 
-    // Detect quote mint program — patch only if Token-2022
-    const quoteInfo  = await conn.getAccountInfo(quoteMint);
-    const quoteIsT22 = quoteInfo?.owner.equals(TOKEN_2022_PROGRAM_ID) ?? false;
+    // Read the quote mint once: token program (for the Token-2022 patch) and
+    // actual decimals (so the curve config can never drift from the mint).
+    const quoteInfo  = await conn.getParsedAccountInfo(quoteMint);
+    const quoteData  = quoteInfo.value?.data;
+    const quoteIsT22 = quoteInfo.value?.owner.equals(TOKEN_2022_PROGRAM_ID) ?? false;
+    const quoteDecimals =
+      (quoteData && "parsed" in quoteData ? quoteData.parsed?.info?.decimals : undefined)
+      ?? (poolType === "meme" ? 6 : 9);
+
+    const configParam = poolType === "meme"
+      ? buildMemeConfig(quoteDecimals)
+      : buildStableConfig(quoteDecimals);
 
     const rawTx = await client.partner.createConfigAndPool({
       config:           configPubkey,

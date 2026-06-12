@@ -39,3 +39,21 @@ body::before {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+
+/* pump.fun-style bump: shake once, glow green while fresh */
+@keyframes bump-shake {
+  0%, 100% { transform: translateX(0); }
+  15%      { transform: translateX(-5px) rotate(-0.5deg); }
+  30%      { transform: translateX(5px) rotate(0.5deg); }
+  45%      { transform: translateX(-4px); }
+  60%      { transform: translateX(4px); }
+  75%      { transform: translateX(-2px); }
+  90%      { transform: translateX(1px); }
+}
+@keyframes bump-glow {
+  0%   { box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.7), 0 0 28px rgba(74, 222, 128, 0.35); }
+  100% { box-shadow: 0 0 0 1px rgba(74, 222, 128, 0), 0 0 0 rgba(74, 222, 128, 0); }
+}
+.bump-active {
+  animation: bump-shake 0.55s ease, bump-glow 2.5s ease forwards;
+}

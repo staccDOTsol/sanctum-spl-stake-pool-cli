@@ -16,8 +16,10 @@ export const RFREESTACC_MINT = new PublicKey(
 export const MEME_QUOTE_MINT = new PublicKey("GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump");
 
 // L1 DBC pool addresses (rfreestacc/LEAK and GNcibpKH/LEAK).
-// Set NEXT_PUBLIC_STABLE_L1_POOL and NEXT_PUBLIC_MEME_L1_POOL env vars once deployed.
-export const STABLE_L1_POOL = process.env.NEXT_PUBLIC_STABLE_L1_POOL ?? "";
+// Stable defaults to the deployed platform pool (pool1Address in
+// mainnet-deployment.json: base = LEAK, quote = rfstacc) so new launches
+// register a real leak-side vote source. Meme stays unset until deployed.
+export const STABLE_L1_POOL = process.env.NEXT_PUBLIC_STABLE_L1_POOL ?? "ze1HvkHogbWPRiR6W5DYp82YrtJTAum1WEDLrUJNjwX";
 export const MEME_L1_POOL   = process.env.NEXT_PUBLIC_MEME_L1_POOL   ?? "";
 
 export type PoolTypeChoice = "stable" | "meme";

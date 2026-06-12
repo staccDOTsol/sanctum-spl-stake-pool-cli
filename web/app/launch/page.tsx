@@ -17,6 +17,21 @@ interface FormState {
   file:        File | null;
 }
 
+// Detect the real MIME type of an upload: browser-provided type first,
+// extension fallback for browsers that leave file.type empty.
+const EXT_MIME: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  webp: "image/webp", svg: "image/svg+xml", mp3: "audio/mpeg", wav: "audio/wav",
+  m4a: "audio/mp4", ogg: "audio/ogg", flac: "audio/flac", mp4: "video/mp4",
+  webm: "video/webm", mov: "video/quicktime", mkv: "video/x-matroska",
+  txt: "text/plain", md: "text/markdown", json: "application/json", pdf: "application/pdf",
+};
+function detectMime(file: File): string {
+  if (file.type) return file.type;
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return EXT_MIME[ext] ?? "application/octet-stream";
+}
+
 async function blobUpload(pathname: string, file: File): Promise<string> {
   const res = await fetch("/api/blob/presign", {
     method: "POST",
@@ -300,25 +315,19 @@ export default function LaunchPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-white/70 mb-1.5">Content type</label>
-            <select
-              value={form.contentType}
-              onChange={e => setForm(f => ({ ...f, contentType: e.target.value }))}
-              className="w-full px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-green-500/40"
-            >
-              <option value="text">Text / Document</option>
-              <option value="jpeg">Image (JPEG)</option>
-              <option value="png">Image (PNG)</option>
-              <option value="audio">Audio</option>
-              <option value="video">Video</option>
-            </select>
-          </div>
-
-          <div>
             <label className="block text-sm font-medium text-white/70 mb-1.5">
               File <span className="text-white/30">(optional — will be encrypted)</span>
             </label>
-            <input ref={fileRef} type="file" onChange={e => setForm(f => ({ ...f, file: e.target.files?.[0] ?? null }))} className="hidden" />
+            <input
+              ref={fileRef}
+              type="file"
+              onChange={e => {
+                const file = e.target.files?.[0] ?? null;
+                // contentType auto-detected from the upload; "text" when no file
+                setForm(f => ({ ...f, file, contentType: file ? detectMime(file) : "text" }));
+              }}
+              className="hidden"
+            />
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
@@ -326,6 +335,11 @@ export default function LaunchPage() {
             >
               {form.file ? `${form.file.name} (${(form.file.size / 1024).toFixed(1)} KB)` : "Click to choose file"}
             </button>
+            {form.file && (
+              <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 border border-white/8 text-xs font-mono text-white/50">
+                detected type: <span className="text-green-400/80">{form.contentType}</span>
+              </div>
+            )}
           </div>
 
           <button type="submit" className="w-full py-3 rounded-xl bg-green-500 hover:bg-green-400 text-black font-bold text-sm transition-colors">

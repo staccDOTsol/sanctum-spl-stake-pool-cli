@@ -6,13 +6,15 @@
  *   limit  (default 20)
  *   offset (default 0)
  *   sort   "hot" | "new" | "rising" | "contested"
- *   type   "png" | "jpeg" | "text" | "all" (default "all")
+ *   type   "text" | "image" | "audio" | "video" | "all" (default "all")
+ *   q      free-text search over title/description/creator/mint
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getRegistry } from "../../../lib/registry";
 import { fetchPoolRatio } from "../../../lib/solana";
 import { getMockSnapshot } from "../../../lib/mockRatio";
 import { rankContent } from "../../../lib/trending";
+import { contentCategory } from "../../../lib/types";
 import type { PoolSnapshot } from "../../../lib/types";
 import type { TrendingInput } from "../../../lib/trending";
 
@@ -27,14 +29,24 @@ export async function GET(req: NextRequest) {
   const offset = parseInt(sp.get("offset") ?? "0");
   const sort = (sp.get("sort") ?? "hot") as SortMode;
   const typeFilter = sp.get("type") ?? "all";
+  const q = (sp.get("q") ?? "").trim().toLowerCase();
 
   try {
     const registry = await getRegistry();
 
-    // Filter by content type
-    const filtered = typeFilter === "all"
+    // Filter by content category (contentType may be a MIME type or a
+    // legacy form value — match on category, with legacy exact fallback)
+    let filtered = typeFilter === "all"
       ? registry
-      : registry.filter((e) => e.contentType === typeFilter);
+      : registry.filter((e) =>
+          contentCategory(e.contentType) === typeFilter || e.contentType === typeFilter);
+    if (q) {
+      filtered = filtered.filter((e) =>
+        e.title.toLowerCase().includes(q)
+        || e.description.toLowerCase().includes(q)
+        || (e.creator ?? "").toLowerCase().includes(q)
+        || e.dontLeakMint.toLowerCase().includes(q));
+    }
 
     // Fetch live pool ratios in parallel (with mock fallback for seed data)
     const snapshots = await Promise.all(

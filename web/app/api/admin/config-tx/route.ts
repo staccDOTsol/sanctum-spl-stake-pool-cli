@@ -53,10 +53,10 @@ const COMMON = {
   },
 };
 
-function buildStableCurve() {
+function buildStableCurve(quoteDecimals: number) {
   return buildCurveWithMarketCap({
     token: {
-      tokenType: TokenType.Token2022, tokenBaseDecimal: 9, tokenQuoteDecimal: 9,
+      tokenType: TokenType.Token2022, tokenBaseDecimal: 9, tokenQuoteDecimal: quoteDecimals,
       tokenAuthorityOption: TokenAuthorityOption.Immutable,
       totalTokenSupply: 1_000_000_000, leftover: 0,
     },
@@ -74,10 +74,10 @@ function buildStableCurve() {
   });
 }
 
-function buildMemeCurve() {
+function buildMemeCurve(quoteDecimals: number) {
   return buildCurveWithMarketCap({
     token: {
-      tokenType: TokenType.Token2022, tokenBaseDecimal: 9, tokenQuoteDecimal: 6,
+      tokenType: TokenType.Token2022, tokenBaseDecimal: 9, tokenQuoteDecimal: quoteDecimals,
       tokenAuthorityOption: TokenAuthorityOption.Immutable,
       totalTokenSupply: 1_000_000_000, leftover: 0,
     },
@@ -110,10 +110,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "PLATFORM_FEE_RECEIVER env var not set" }, { status: 503 });
     }
 
-    const conn       = new Connection(RPC, "confirmed");
-    const client     = DynamicBondingCurveClient.create(conn, "confirmed");
-    const quoteMint  = QUOTE_MINTS[configType];
-    const curveParam = configType === "meme" ? buildMemeCurve() : buildStableCurve();
+    const conn      = new Connection(RPC, "confirmed");
+    const client    = DynamicBondingCurveClient.create(conn, "confirmed");
+    const quoteMint = QUOTE_MINTS[configType];
+
+    // Decimals come from the chain so the curve can never drift from the mint
+    const mintInfo = await conn.getParsedAccountInfo(new PublicKey(quoteMint));
+    const mintData = mintInfo.value?.data;
+    const quoteDecimals =
+      (mintData && "parsed" in mintData ? mintData.parsed?.info?.decimals : undefined)
+      ?? (configType === "meme" ? 6 : 9);
+
+    const curveParam = configType === "meme" ? buildMemeCurve(quoteDecimals) : buildStableCurve(quoteDecimals);
 
     // createConfig — platform is feeClaimer and leftoverReceiver (we earn partner share)
     const tx = await client.partner.createConfig({
