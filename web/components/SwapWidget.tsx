@@ -285,11 +285,16 @@ export default function SwapWidget({
         addLog("Fetching Jupiter Ultra order (SOL → quote token)…");
         try {
           order = await ultraOrder(SOL_MINT, quoteMint, lamports, taker);
-          if (!order.transaction) throw new Error("no route");
-        } catch {
+        } catch (e) {
+          // Genuinely unroutable (or API error) — fall back to the LEAK route
           direct = false;
           order  = null;
-          addLog("No direct Jupiter route to the quote token — falling back to LEAK route");
+          addLog(`Direct quote route unavailable (${e instanceof Error ? e.message.slice(0, 80) : e}) — trying LEAK route`);
+        }
+        if (order && !order.transaction) {
+          // Routable, but Ultra returned no signable tx for THIS taker —
+          // almost always: the wallet's SOL can't cover amount + fees.
+          throw new Error("Jupiter found a route but no transaction for your wallet — lower the amount or top up SOL (must cover amount + fees)");
         }
       }
 
