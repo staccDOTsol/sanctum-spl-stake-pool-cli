@@ -34,7 +34,10 @@ async function api(path, { method = "POST", key, body } = {}) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const out = await res.json().catch(() => null);
-  if (!res.ok || typeof out === "string") {
+  // Some endpoints legitimately return a bare JSON string on success
+  // (e.g. /get_lit_action_ipfs_id returns the CID) — only HTTP status
+  // distinguishes success from an ErrMessage.
+  if (!res.ok) {
     throw new Error(`${path} failed (HTTP ${res.status}): ${JSON.stringify(out)}`);
   }
   return out;
@@ -84,10 +87,16 @@ async function paid(label, fn) {
   }
 }
 
-// 2. PKP wallet — derives the content encryption keys
-const wallet = await paid("/create_wallet", () => api("/create_wallet", { method: "GET", key: apiKey }));
-const pkpId  = wallet.wallet_address;
-console.log(`✓ PKP wallet: ${pkpId}`);
+// 2. PKP wallet — derives the content encryption keys.
+//    Resume-safe: pass LIT_PKP_ID to reuse a wallet created on a prior run.
+let pkpId = process.env.LIT_PKP_ID;
+if (pkpId) {
+  console.log(`• reusing PKP wallet from LIT_PKP_ID env: ${pkpId}`);
+} else {
+  const wallet = await paid("/create_wallet", () => api("/create_wallet", { method: "GET", key: apiKey }));
+  pkpId = wallet.wallet_address;
+  console.log(`✓ PKP wallet: ${pkpId}`);
+}
 
 // 3. Pin the ladder action: compute its IPFS CID, register it
 const cid = await paid("/get_lit_action_ipfs_id", () => api("/get_lit_action_ipfs_id", { key: apiKey, body: ACTION_CODE }));
