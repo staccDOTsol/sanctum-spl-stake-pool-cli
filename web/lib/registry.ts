@@ -20,6 +20,9 @@ const BLACKLIST = new Set([
   "user-1781247483022-zzoiu4", // staccana 4 eva — broken micro-curve pool (6033)
   "user-1781249228886-swvp2s", // 152 — test launch
   "user-1781249055312-j586b6", // staccana 5 eva <3 — test launch
+  "user-1781253082104-orvqbv", // ong? — test launch
+  "user-1781253832945-kk1jal", // safu — test launch (bytes-mode avif)
+  "user-1781250525259-e91bo5", // bigww — test launch
   ...(process.env.REGISTRY_BLACKLIST ?? "").split(",").map((s) => s.trim()).filter(Boolean),
 ]);
 

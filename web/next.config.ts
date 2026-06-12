@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "**" },
     ],
   },
-  serverExternalPackages: ["@vercel/blob", "@lit-protocol/lit-node-client", "@lit-protocol/constants"],
+  serverExternalPackages: ["@vercel/blob", "@lit-protocol/lit-node-client", "@lit-protocol/constants", "sharp"],
   webpack(config, { isServer }) {
     if (!isServer) {
       config.resolve.fallback = {

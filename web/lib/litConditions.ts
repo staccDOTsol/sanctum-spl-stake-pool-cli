@@ -159,7 +159,9 @@ export function chunkCountFor(totalBytes: number, requested?: number): number {
   if (requested && Number.isFinite(requested) && requested > 0) {
     return Math.max(2, Math.min(Math.floor(requested), max));
   }
-  return Math.max(8, Math.min(24, Math.ceil(totalBytes / 8_192)));
+  // Default: one tier per ~512B, 64..256 — measured ~5ms/tier in the
+  // enclave and size-batched, so "many smol chunks" is cheap.
+  return Math.max(64, Math.min(256, Math.ceil(totalBytes / 512)));
 }
 
 /**
