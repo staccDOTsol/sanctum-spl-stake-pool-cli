@@ -53,24 +53,53 @@ if (apiKey) {
   });
   apiKey = acct.api_key;
   console.log(`✓ account created — owner wallet ${acct.wallet_address}`);
+  console.log(`\n  *** SAVE THIS NOW ***\n  LIT_API_KEY=${apiKey}\n`);
+  console.log(
+    "  Wallet creation and action runs are PAID operations — fund this\n" +
+    "  account first (min $5) at https://dashboard.chipotle.litprotocol.com\n" +
+    "  using the API key above, then re-run:\n\n" +
+    `    LIT_API_KEY=${apiKey} node scripts/chipotle-setup.mjs\n`,
+  );
+}
+
+// Check balance before attempting paid operations
+try {
+  const bal = await api("/billing/balance", { method: "GET", key: apiKey });
+  console.log(`• credit balance: ${JSON.stringify(bal)}`);
+} catch { /* balance endpoint shape may vary; non-fatal */ }
+
+async function paid(label, fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (/HTTP 402/.test(String(e.message))) {
+      console.error(
+        `\n✗ ${label} returned 402 Payment Required — the account has no credits.\n` +
+        "  Fund it (min $5) at https://dashboard.chipotle.litprotocol.com with\n" +
+        `  the API key above, then re-run:\n\n    LIT_API_KEY=${apiKey} node scripts/chipotle-setup.mjs\n`,
+      );
+      process.exit(1);
+    }
+    throw e;
+  }
 }
 
 // 2. PKP wallet — derives the content encryption keys
-const wallet = await api("/create_wallet", { method: "GET", key: apiKey });
+const wallet = await paid("/create_wallet", () => api("/create_wallet", { method: "GET", key: apiKey }));
 const pkpId  = wallet.wallet_address;
 console.log(`✓ PKP wallet: ${pkpId}`);
 
 // 3. Pin the ladder action: compute its IPFS CID, register it
-const cid = await api("/get_lit_action_ipfs_id", { key: apiKey, body: ACTION_CODE });
+const cid = await paid("/get_lit_action_ipfs_id", () => api("/get_lit_action_ipfs_id", { key: apiKey, body: ACTION_CODE }));
 console.log(`✓ ladder action CID: ${cid}`);
-await api("/add_action", {
+await paid("/add_action", () => api("/add_action", {
   key: apiKey,
   body: { action_ipfs_cid: cid, name: "leak-ladder", description: "Threshold-ladder encrypt/decrypt for leak.markets" },
-});
+}));
 console.log("✓ action registered");
 
 // 4. Group binds the PKP to the action CID (structural access control)
-const group = await api("/add_group", {
+const group = await paid("/add_group", () => api("/add_group", {
   key: apiKey,
   body: {
     group_name:           "leak-ladder-group",
@@ -78,11 +107,11 @@ const group = await api("/add_group", {
     pkp_ids_permitted:    [],
     cid_hashes_permitted: [],
   },
-});
+}));
 console.log(`✓ group ${group.group_id}`);
 const groupId = Number(group.group_id);
-await api("/add_action_to_group", { key: apiKey, body: { group_id: groupId, action_ipfs_cid: cid } });
-await api("/add_pkp_to_group",    { key: apiKey, body: { group_id: groupId, pkp_id: pkpId } });
+await paid("/add_action_to_group", () => api("/add_action_to_group", { key: apiKey, body: { group_id: groupId, action_ipfs_cid: cid } }));
+await paid("/add_pkp_to_group",    () => api("/add_pkp_to_group",    { key: apiKey, body: { group_id: groupId, pkp_id: pkpId } }));
 console.log("✓ action + PKP bound to group");
 
 console.log(`
