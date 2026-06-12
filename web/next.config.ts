@@ -9,6 +9,13 @@ const nextConfig: NextConfig = {
     ],
   },
   serverExternalPackages: ["@vercel/blob", "@lit-protocol/lit-node-client", "@lit-protocol/constants", "sharp"],
+  // sharp's native addon (@img/sharp-linux-x64) dlopens libvips from
+  // @img/sharp-libvips-linux-x64 — Vercel's file tracer can't see dlopen
+  // deps, so the .so was missing in prod (ERR_DLOPEN_FAILED). Force both
+  // packages into the function bundle.
+  outputFileTracingIncludes: {
+    "/api/lit/encrypt": ["./node_modules/@img/**/*", "./node_modules/sharp/**/*"],
+  },
   webpack(config, { isServer }) {
     if (!isServer) {
       config.resolve.fallback = {
