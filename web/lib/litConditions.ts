@@ -150,12 +150,21 @@ export function tierConditions(i: number, p: TierParams): ConditionSet {
  * decrypt per view, so tier count scales credits + action time linearly.
  */
 export function chunkCountFor(totalBytes: number, requested?: number): number {
-  const max = Number(process.env.LIT_MAX_TIERS ?? 64);
+  // Measured on Chipotle: 32 tiers encrypt in ~1.2s (time is not the
+  // constraint); the binding limit is the ~1MB action response cap, which
+  // scales with TOTAL content size, not tier count.
+  const max = Number(process.env.LIT_MAX_TIERS ?? 48);
   if (requested && Number.isFinite(requested) && requested > 0) {
     return Math.max(2, Math.min(Math.floor(requested), max));
   }
-  return Math.max(4, Math.min(12, Math.ceil(totalBytes / 16_384)));
+  return Math.max(8, Math.min(24, Math.ceil(totalBytes / 8_192)));
 }
+
+/**
+ * Ciphertext ≈ 2.7× the original bytes and Chipotle caps an action's
+ * response around 1MB — content beyond this needs batched executions.
+ */
+export const MAX_CONTENT_BYTES = Number(process.env.LIT_MAX_CONTENT_BYTES ?? 320_000);
 
 /**
  * Numeric ladder thresholds for chunk i (used by the Chipotle TEE action,

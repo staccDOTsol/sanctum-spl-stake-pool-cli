@@ -24,7 +24,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { deriveDbcTokenVaultAddress } from "@meteora-ag/dynamic-bonding-curve-sdk";
-import { chunkCountFor, tierThresholds, type ChipotleChunk, type ChipotlePayload } from "@/lib/litConditions";
+import { chunkCountFor, tierThresholds, MAX_CONTENT_BYTES, type ChipotleChunk, type ChipotlePayload } from "@/lib/litConditions";
 import { runLadderAction, litEnv } from "@/lib/chipotle";
 
 export const runtime = "nodejs";
@@ -58,6 +58,13 @@ export async function POST(req: NextRequest) {
 
     const rawBytes    = new Uint8Array(await file.arrayBuffer());
     const contentType = file.type || "application/octet-stream";
+    if (rawBytes.length > MAX_CONTENT_BYTES) {
+      return NextResponse.json({
+        error: `File too large for tiered encryption (${Math.round(rawBytes.length / 1024)} KB > ` +
+               `${Math.round(MAX_CONTENT_BYTES / 1024)} KB). The Lit enclave caps a single ` +
+               "execution's response (~1MB; ciphertext is ~2.7× the input) — compress the file or split it.",
+      }, { status: 413 });
+    }
 
     const conn = new Connection(RPC, "confirmed");
 
