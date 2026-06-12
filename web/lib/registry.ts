@@ -18,6 +18,8 @@ const BLACKLIST = new Set([
   "user-1780960638184-elylm4", // Memes — datil ciphertext, undecryptable
   "user-1780962748533-ur3d3s", // Memery — datil ciphertext, undecryptable
   "user-1781247483022-zzoiu4", // staccana 4 eva — broken micro-curve pool (6033)
+  "user-1781249228886-swvp2s", // 152 — test launch
+  "user-1781249055312-j586b6", // staccana 5 eva <3 — test launch
   ...(process.env.REGISTRY_BLACKLIST ?? "").split(",").map((s) => s.trim()).filter(Boolean),
 ]);
 
