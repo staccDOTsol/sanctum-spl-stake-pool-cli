@@ -30,6 +30,12 @@ const RPC_URL = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4
 // Curve market caps are denominated in QUOTE TOKENS — overridable per env.
 const STABLE_INITIAL_MC   = Number(process.env.STABLE_INITIAL_MC   ?? 1_000_000);
 const STABLE_MIGRATION_MC = Number(process.env.STABLE_MIGRATION_MC ?? 1_000_000_000);
+// The DontLeak curve is quoted in the content's own LEAK token (1B supply).
+// With 1M/1B caps the curve absorbed only ~30M LEAK before fully bonding —
+// a single 0.1 SOL buy could buy the whole curve and brick the market.
+// 16M/16B caps put the full-suppression cost at ~490M LEAK (~half supply).
+const DL_INITIAL_MC   = Number(process.env.DL_INITIAL_MC   ?? 16_000_000);
+const DL_MIGRATION_MC = Number(process.env.DL_MIGRATION_MC ?? 16_000_000_000);
 
 // SDK hardcodes TOKEN_PROGRAM_ID for tokenQuoteProgram — patch when the
 // quote is actually Token-2022.
@@ -65,10 +71,12 @@ const COMMON = {
   },
 };
 
-function buildCurve(kind: "stable" | "meme", quoteDecimals: number) {
+function buildCurve(kind: "stable" | "meme" | "dontleak", quoteDecimals: number) {
   const fee = kind === "meme"
     ? { startingFeeBps: 1000, endingFeeBps: 100, numberOfPeriod: 20, totalDuration: 20 }
     : { startingFeeBps: 500,  endingFeeBps: 100, numberOfPeriod: 10, totalDuration: 10 };
+  const initialMC   = kind === "dontleak" ? DL_INITIAL_MC   : STABLE_INITIAL_MC;
+  const migrationMC = kind === "dontleak" ? DL_MIGRATION_MC : STABLE_MIGRATION_MC;
   return buildCurveWithMarketCap({
     token: {
       tokenType:            TokenType.Token2022,
@@ -88,8 +96,8 @@ function buildCurve(kind: "stable" | "meme", quoteDecimals: number) {
     },
     ...COMMON,
     activationType:     ActivationType.Slot,
-    initialMarketCap:   STABLE_INITIAL_MC,
-    migrationMarketCap: STABLE_MIGRATION_MC,
+    initialMarketCap:   initialMC,
+    migrationMarketCap: migrationMC,
   });
 }
 
@@ -103,7 +111,7 @@ export async function POST(req: NextRequest) {
       name:             string;
       symbol:           string;
       uri:              string;
-      curve?:           "stable" | "meme";
+      curve?:           "stable" | "meme" | "dontleak";
     };
     const { payer, configPubkey, basePubkey, quoteMintAddress, name, symbol, uri, curve = "stable" } = body;
 

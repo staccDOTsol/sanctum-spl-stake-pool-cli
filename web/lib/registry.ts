@@ -29,6 +29,7 @@ const BLACKLIST = new Set([
   "user-1781254920304-c7z31s", // bro — test launch
   "user-1781255804399-2x8022", // meeeemes — test launch
   "user-1781255489313-f6pyfv", // memery — test launch (self-bonded curve)
+  "user-1781257641984-ycew28", // first two-pool test — pool B under-scaled, insta-bonded
   ...(process.env.REGISTRY_BLACKLIST ?? "").split(",").map((s) => s.trim()).filter(Boolean),
 ]);
 

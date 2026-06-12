@@ -189,7 +189,7 @@ export default function LaunchPage() {
         name:      `DontLeak: ${form.title}`,
         symbol:    dlSym,
         uri:       dlMeta,
-        curve:     "stable",
+        curve:     "dontleak", // LEAK-denominated caps: full suppression ≈ half the LEAK supply
       });
       addLog(`✓ DontLeak pool live  (${poolB.sig.slice(0, 16)}…)`);
 

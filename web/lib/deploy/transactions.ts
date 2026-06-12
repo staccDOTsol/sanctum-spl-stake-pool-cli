@@ -91,7 +91,7 @@ export async function deployCurve(
     name:      string;
     symbol:    string;
     uri:       string;
-    curve:     "stable" | "meme";
+    curve:     "stable" | "meme" | "dontleak";
   },
 ): Promise<DeployedPool> {
   const res = await fetch("/api/deploy/pool2", {
