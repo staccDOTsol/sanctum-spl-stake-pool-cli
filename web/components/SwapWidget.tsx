@@ -142,7 +142,7 @@ async function dbcSwap(
     const pool      = await client.state.getPool(poolPk);
     const threshold = await client.state.getPoolMigrationQuoteThreshold(poolPk);
     if (pool && threshold) {
-      const remaining = BigInt(threshold.toString()) - BigInt(pool.quoteReserve.toString());
+      const remaining = BigInt(threshold.toString()) - BigInt(pool.poolState.quoteReserve.toString());
       if (remaining <= BigInt(0)) {
         throw new Error("This bonding curve is fully bonded — no curve liquidity left to buy");
       }
