@@ -130,9 +130,26 @@ async function dbcSwap(
 ): Promise<string> {
   // Use actual wallet balance — Jupiter/prior swaps may land slightly less than estimated
   const actual = await getTokenBalance(conn, wallet.publicKey, inputMint);
-  const safeIn = actual > BigInt(0) ? actual : amountIn;
+  let safeIn = actual > BigInt(0) ? actual : amountIn;
 
   const client = DynamicBondingCurveClient.create(conn, "confirmed");
+
+  // Buying base with quote: the curve only absorbs quote up to its migration
+  // threshold — cap the input at remaining capacity or the program throws
+  // 6033 "Liquidity in bonding curve is insufficient".
+  if (!swapBaseForQuote) {
+    const poolPk    = new PublicKey(poolAddress);
+    const pool      = await client.state.getPool(poolPk);
+    const threshold = await client.state.getPoolMigrationQuoteThreshold(poolPk);
+    if (pool && threshold) {
+      const remaining = BigInt(threshold.toString()) - BigInt(pool.quoteReserve.toString());
+      if (remaining <= BigInt(0)) {
+        throw new Error("This bonding curve is fully bonded — no curve liquidity left to buy");
+      }
+      if (safeIn > remaining) safeIn = remaining;
+    }
+  }
+
   const rawTx  = await client.pool.swap({
     owner:                wallet.publicKey,
     pool:                 new PublicKey(poolAddress),

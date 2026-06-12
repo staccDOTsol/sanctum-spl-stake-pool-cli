@@ -70,6 +70,13 @@ const COMMON_MIGRATION = {
   migratedPoolFee:    undefined,
 };
 
+// Curve market caps are denominated in QUOTE TOKENS. The stable quote is
+// LEAK (~1M LEAK ≈ 1 SOL), so caps must be LEAK-scaled: the old 11/1100
+// made the whole curve worth a fraction of a cent and ANY buy overflowed
+// it (program error 6033). Overridable per environment.
+const STABLE_INITIAL_MC   = Number(process.env.STABLE_INITIAL_MC   ?? 1_000_000);     // ≈ 1 SOL
+const STABLE_MIGRATION_MC = Number(process.env.STABLE_MIGRATION_MC ?? 1_000_000_000); // ≈ 1k SOL
+
 function buildStableConfig(quoteDecimals: number) {
   return buildCurveWithMarketCap({
     token: {
@@ -95,8 +102,8 @@ function buildStableConfig(quoteDecimals: number) {
     liquidityDistribution: COMMON_LIQUIDITY,
     lockedVesting:         COMMON_LOCKED_VESTING,
     activationType:        ActivationType.Slot,
-    initialMarketCap:      11,
-    migrationMarketCap:    1100,
+    initialMarketCap:      STABLE_INITIAL_MC,
+    migrationMarketCap:    STABLE_MIGRATION_MC,
   });
 }
 
