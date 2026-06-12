@@ -75,14 +75,15 @@ async function ultraSwap(order: UltraOrder, wallet: WalletProvider): Promise<str
   return ultraExecute(Buffer.from(signed.serialize()).toString("base64"), order.requestId);
 }
 
-// For display-only quote preview (no wallet needed)
+// Display-only quote preview — Ultra /order without a taker returns the
+// quote alone (the old quote-api.jup.ag/v6 domain no longer resolves).
 async function jupiterPreviewQuote(inputMint: string, outputMint: string, amount: number) {
-  const url = new URL("https://quote-api.jup.ag/v6/quote");
+  const url = new URL(`${JUP_ULTRA_BASE}/order`);
   url.searchParams.set("inputMint",   inputMint);
   url.searchParams.set("outputMint",  outputMint);
   url.searchParams.set("amount",      String(Math.floor(amount)));
   url.searchParams.set("slippageBps", String(SLIPPAGE));
-  const res = await fetch(url.toString());
+  const res = await fetch(url.toString(), { headers: { "Authorization": `Bearer ${JUP_API_KEY}` } });
   if (!res.ok) throw new Error("Quote unavailable");
   return res.json() as Promise<{ outAmount: string }>;
 }
@@ -134,9 +135,14 @@ async function dbcSwap(
   quoteIsT22:       boolean,
   inputMint:        PublicKey,
 ): Promise<string> {
-  // Use actual wallet balance — Jupiter/prior swaps may land slightly less than estimated
+  // Use actual wallet balance — Jupiter/prior swaps may land slightly less
+  // than estimated. NEVER submit with a zero balance: the transfer fails
+  // on-chain ("insufficient funds") and burns the fee.
   const actual = await getTokenBalance(conn, wallet.publicKey, inputMint);
-  let safeIn = actual > BigInt(0) ? actual : amountIn;
+  if (actual <= BigInt(0)) {
+    throw new Error(`Wallet holds none of the input token (${inputMint.toBase58().slice(0, 8)}…) — cannot swap`);
+  }
+  let safeIn = actual;
 
   const client = DynamicBondingCurveClient.create(conn, "confirmed");
 
@@ -244,47 +250,78 @@ export default function SwapWidget({
       const lamports = parseFloat(solInput) * 1e9;
       if (!lamports || lamports < 1000) throw new Error("Enter a valid SOL amount");
 
-      // ── Step 1: Jupiter Ultra SOL → LEAK ────────────────────────────────
-      addLog("Fetching Jupiter Ultra order (SOL → LEAK)…");
-      const order   = await ultraOrder(SOL_MINT, LEAK_MINT, lamports, wallet.publicKey.toBase58());
-      const leakOut = BigInt(order.outAmount);
-      addLog(`~${fmt(lamports)} SOL → ~${fmt(leakOut.toString())} LEAK`);
+      const taker = wallet.publicKey.toBase58();
+      const confirmTx = async (sig: string) => {
+        // Jupiter Ultra /execute returns at "processed" commitment; wait for
+        // "confirmed" so the next swap's balance read sees the new tokens.
+        const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+        await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+      };
 
-      addLog("Sign tx 1 — SOL → LEAK (Jupiter Ultra)");
-      const sig1 = await ultraSwap(order, wallet);
-      addLog(`Confirming LEAK deposit…`);
-      // Jupiter Ultra /execute returns at "processed" commitment; we need
-      // "confirmed" before the DBC swap simulation sees the new LEAK balance.
-      const { blockhash: bh1, lastValidBlockHeight: lvbh1 } = await conn.getLatestBlockhash("confirmed");
-      await conn.confirmTransaction({ signature: sig1, blockhash: bh1, lastValidBlockHeight: lvbh1 }, "confirmed");
-      addLog(`✓ LEAK confirmed  (${sig1.slice(0, 16)}…)`);
-
-      // Buying Leak ends here: holding LEAK is both the market vote (the
-      // curve purchase deposited quote into the L1 vault) and the Lit
-      // decryption credential. Swapping it away would undo both.
+      // ── Buy Leak: one Jupiter swap, hold the LEAK ───────────────────────
+      // Holding LEAK is both the market vote (the curve purchase deposited
+      // quote into the L1 vault) and the Lit decryption credential.
       if (mode === "leak") {
-        addLog("✓ Holding LEAK — your vote to reveal (and your decryption key)");
+        addLog("Fetching Jupiter Ultra order (SOL → LEAK)…");
+        const order = await ultraOrder(SOL_MINT, LEAK_MINT, lamports, taker);
+        addLog(`~${fmt(lamports)} SOL → ~${fmt(order.outAmount)} LEAK`);
+        addLog("Sign tx 1 — SOL → LEAK (Jupiter Ultra)");
+        const sig1 = await ultraSwap(order, wallet);
+        await confirmTx(sig1);
+        addLog(`✓ Holding LEAK — your vote to reveal (and your decryption key)  (${sig1.slice(0, 16)}…)`);
         setDone(sig1);
         return;
       }
 
-      // ── Step 2: DBC LEAK → quoteMint (L1 pool) ──────────────────────────
-      // L1 pools are base=LEAK / quote=rfreestacc|meme (verified on-chain),
-      // so spending LEAK is a base→quote swap.
-      // Skip if quoteMint IS LEAK (stable pools with no separate L1 pool yet)
-      const needsL1Swap = !!l1PoolAddress && quoteMint !== LEAK_MINT;
-
-      if (needsL1Swap) {
-        addLog("Sign tx 2 — LEAK → quoteMint (DBC L1)");
-        const sig2 = await dbcSwap(conn, wallet, l1PoolAddress, leakOut, true, quoteIsT22, new PublicKey(LEAK_MINT));
-        addLog(`✓ quoteMint received  (${sig2.slice(0, 16)}…)`);
-      } else {
-        addLog("quoteMint = LEAK — skipping L1 pool swap");
+      // ── Buy DontLeak ─────────────────────────────────────────────────────
+      // The L2 curve only accepts ITS quote token. Prefer buying the quote
+      // directly with SOL on Jupiter; fall back to SOL→LEAK + the L1 pool
+      // hop (base=LEAK/quote=quoteMint, so spending LEAK is base→quote)
+      // when Jupiter has no route to the quote token.
+      let quoteOut: bigint;
+      let direct = quoteMint !== LEAK_MINT;
+      let order: UltraOrder | null = null;
+      if (direct) {
+        addLog("Fetching Jupiter Ultra order (SOL → quote token)…");
+        try {
+          order = await ultraOrder(SOL_MINT, quoteMint, lamports, taker);
+          if (!order.transaction) throw new Error("no route");
+        } catch {
+          direct = false;
+          order  = null;
+          addLog("No direct Jupiter route to the quote token — falling back to LEAK route");
+        }
       }
 
-      // ── Step 3: DBC quoteMint → DontLeak (L2 content pool) ───────────────
-      addLog(`Sign tx ${needsL1Swap ? 3 : 2} — quoteMint → DontLeak (DBC L2)`);
-      const sig3 = await dbcSwap(conn, wallet, dontLeakPoolAddress, leakOut, false, quoteIsT22, new PublicKey(quoteMint));
+      if (direct && order) {
+        addLog("Sign tx 1 — SOL → quote token (Jupiter Ultra)");
+        const sig1 = await ultraSwap(order, wallet);
+        await confirmTx(sig1);
+        quoteOut = BigInt(order.outAmount);
+        addLog(`✓ quote token confirmed  (${sig1.slice(0, 16)}…)`);
+      } else {
+        if (quoteMint !== LEAK_MINT && !l1PoolAddress) {
+          throw new Error("Cannot acquire the pool's quote token: no Jupiter route and no L1 pool configured");
+        }
+        addLog("Fetching Jupiter Ultra order (SOL → LEAK)…");
+        const leakOrder = await ultraOrder(SOL_MINT, LEAK_MINT, lamports, taker);
+        const leakOut   = BigInt(leakOrder.outAmount);
+        addLog(`~${fmt(lamports)} SOL → ~${fmt(leakOut.toString())} LEAK`);
+        addLog("Sign tx 1 — SOL → LEAK (Jupiter Ultra)");
+        const sig1 = await ultraSwap(leakOrder, wallet);
+        await confirmTx(sig1);
+        addLog(`✓ LEAK confirmed  (${sig1.slice(0, 16)}…)`);
+        quoteOut = leakOut;
+        if (quoteMint !== LEAK_MINT) {
+          addLog("Sign tx 2 — LEAK → quote token (DBC L1)");
+          const sig2 = await dbcSwap(conn, wallet, l1PoolAddress, leakOut, true, quoteIsT22, new PublicKey(LEAK_MINT));
+          addLog(`✓ quote token received  (${sig2.slice(0, 16)}…)`);
+        }
+      }
+
+      // Final hop: quote token → DontLeak on the content curve
+      addLog("Sign final tx — quote token → DontLeak (DBC L2)");
+      const sig3 = await dbcSwap(conn, wallet, dontLeakPoolAddress, quoteOut, false, quoteIsT22, new PublicKey(quoteMint));
       addLog(`✓ DontLeak received  (${sig3.slice(0, 16)}…)`);
       setDone(sig3);
     } catch (e: unknown) {

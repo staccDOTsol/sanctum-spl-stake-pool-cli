@@ -111,18 +111,31 @@ await paid("/add_action", () => api("/add_action", {
 }));
 console.log("✓ action registered");
 
-// 4. Group binds the PKP to the action CID (structural access control)
-const group = await paid("/add_group", () => api("/add_group", {
-  key: apiKey,
-  body: {
-    group_name:           "leak-ladder-group",
-    group_description:    "Only the ladder action may use the content PKP",
-    pkp_ids_permitted:    [],
-    cid_hashes_permitted: [],
-  },
-}));
-console.log(`✓ group ${group.group_id}`);
-const groupId = Number(group.group_id);
+// 4. Group binds the PKP to the action CID (structural access control).
+//    Reuse an existing group when possible — usage keys are scoped to
+//    specific group IDs, so adding the new action CID to an existing group
+//    keeps already-minted runtime keys working without changes.
+let groupId;
+try {
+  const groups = await api(`/list_groups?page_number=0&page_size=50`, { method: "GET", key: apiKey });
+  if (Array.isArray(groups) && groups.length > 0) {
+    groupId = Number(BigInt(groups[groups.length - 1].id));
+    console.log(`• reusing existing group ${groupId}`);
+  }
+} catch { /* fall through to creating one */ }
+if (!groupId) {
+  const group = await paid("/add_group", () => api("/add_group", {
+    key: apiKey,
+    body: {
+      group_name:           "leak-ladder-group",
+      group_description:    "Only the ladder action may use the content PKP",
+      pkp_ids_permitted:    [],
+      cid_hashes_permitted: [],
+    },
+  }));
+  console.log(`✓ group ${group.group_id}`);
+  groupId = Number(group.group_id);
+}
 await paid("/add_action_to_group", () => api("/add_action_to_group", { key: apiKey, body: { group_id: groupId, action_ipfs_cid: cid } }));
 await paid("/add_pkp_to_group",    () => api("/add_pkp_to_group",    { key: apiKey, body: { group_id: groupId, pkp_id: pkpId } }));
 console.log("✓ action + PKP bound to group");

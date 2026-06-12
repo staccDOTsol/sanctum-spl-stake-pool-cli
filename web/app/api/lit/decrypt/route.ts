@@ -1,24 +1,26 @@
 /**
  * POST /api/lit/decrypt
- * Tiered decryption on Lit Chipotle (v3). The browser signs the auth
- * message; the immutable ladder action verifies it INSIDE the TEE, checks
- * LEAK holding + per-chunk vault thresholds against live Solana state, and
- * returns only the chunks the market currently allows. The server never
- * holds key material and cannot over-reveal.
+ * Permissionless, market-gated decryption on Lit Chipotle (v3).
  *
- * Body: { payload: ChipotlePayload (v3), authSig }
+ * No wallet, no signature: the immutable ladder action reads BOTH curve
+ * reserve accounts live inside the TEE, computes
+ *     r = sqrt(leak / (leak + dontLeak))
+ * and returns only the first floor(r·k) tiers — whoever asks gets exactly
+ * what the market currently reveals. Vault addresses and tier layout are
+ * sealed inside each chunk's ciphertext, so they cannot be tampered with.
+ *
+ * Body: { payload: ChipotlePayload (v3) }
  * Response: {
- *   version: 3, contentType, totalBytes, unlockedBytes,
- *   chunks: [{ index, unlocked }],
- *   data — base64 of the CONTIGUOUS unlocked prefix (the reveal frontier)
+ *   version: 3, mode, contentType, totalBytes, unlockedBytes, r,
+ *   chunks: [{ index, unlocked, data? (image-strips) }],
+ *   data — base64 of the contiguous unlocked prefix (the reveal frontier)
  * }
  *
- * v1/v2 payloads were encrypted on Lit's datil network, which was shut down
- * on 2026-02-25 — those ciphertexts are permanently unrecoverable (the
- * network's threshold keys are gone). They get a clear 410 response.
+ * v1/v2 payloads were encrypted on Lit's datil network (shut down
+ * 2026-02-25) — permanently unrecoverable; clear 410.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { isChipotlePayload, isTieredPayload, LEAK_MINT, ENCLAVE_BATCH_BUDGET } from "@/lib/litConditions";
+import { isChipotlePayload, isTieredPayload, ENCLAVE_BATCH_BUDGET } from "@/lib/litConditions";
 import { runLadderAction, litEnv } from "@/lib/chipotle";
 
 export const runtime = "nodejs";
@@ -26,20 +28,11 @@ export const maxDuration = 120;
 
 const RPC = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
 
-interface AuthSig { sig: string; derivedVia: string; signedMessage: string; address: string }
 interface ActionChunk { index: number; unlocked: boolean; data?: string }
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json() as {
-      payload?:    unknown;
-      ciphertext?: string;
-      authSig?:    AuthSig;
-    };
-
-    if (!body.authSig) {
-      return NextResponse.json({ error: "authSig required" }, { status: 400 });
-    }
+    const body = await req.json() as { payload?: unknown; ciphertext?: string };
 
     // ── Chipotle tiered payload (v3) ─────────────────────────────────
     if (isChipotlePayload(body.payload)) {
@@ -63,25 +56,19 @@ export async function POST(req: NextRequest) {
       if (cur.length) batches.push({ start, ciphertexts: cur });
 
       const merged: ActionChunk[] = [];
+      let r: number | null = null;
       for (const batch of batches) {
-        const out = await runLadderAction<{ chunks: ActionChunk[] }>({
+        const out = await runLadderAction<{ chunks: ActionChunk[]; r?: number | null }>({
           op:          "decrypt",
           pkpId,
           rpcUrl:      RPC,
-          leakMint:    LEAK_MINT,
-          authSig:     body.authSig,
           ciphertexts: batch.ciphertexts,
-        }).catch((e: Error) => {
-          if (/ACCESS_DENIED_NO_LEAK/.test(e.message)) {
-            throw Object.assign(new Error("Access denied — you need LEAK tokens to decrypt"), { status: 403 });
-          }
-          throw e;
         });
+        if (typeof out.r === "number") r = out.r;
         for (const c of out.chunks) merged.push({ ...c, index: c.index + batch.start });
       }
-      const result = { chunks: merged };
 
-      const byIndex  = new Map(result.chunks.map((c) => [c.index, c]));
+      const byIndex  = new Map(merged.map((c) => [c.index, c]));
       const isStrips = payload.mode === "image-strips";
 
       // bytes mode: the reveal frontier is the contiguous prefix up to the
@@ -101,12 +88,13 @@ export async function POST(req: NextRequest) {
         contentType:   payload.contentType,
         totalBytes:    payload.totalBytes,
         unlockedBytes: prefix.length,
+        r,
         chunks:        payload.chunks.map((c) => {
-          const r = byIndex.get(c.index);
+          const res = byIndex.get(c.index);
           return {
             index:    c.index,
-            unlocked: !!r?.unlocked,
-            ...(isStrips && r?.unlocked && r.data ? { data: r.data } : {}),
+            unlocked: !!res?.unlocked,
+            ...(isStrips && res?.unlocked && res.data ? { data: res.data } : {}),
           };
         }),
         data:          prefix.toString("base64"),
@@ -124,9 +112,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "payload (v3) required" }, { status: 400 });
   } catch (err: unknown) {
     console.error("[/api/lit/decrypt]", err);
-    const msg    = err instanceof Error ? err.message : "Decryption failed";
-    const status = (err as { status?: number })?.status
-      ?? (/access|denied|unauthori/i.test(msg) ? 403 : 500);
-    return NextResponse.json({ error: msg }, { status });
+    const msg = err instanceof Error ? err.message : "Decryption failed";
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

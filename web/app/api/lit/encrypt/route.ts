@@ -24,7 +24,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { deriveDbcTokenVaultAddress } from "@meteora-ag/dynamic-bonding-curve-sdk";
-import { chunkCountFor, tierThresholds, MAX_CONTENT_BYTES, ENCLAVE_BATCH_BUDGET, type ChipotleChunk, type ChipotlePayload } from "@/lib/litConditions";
+import { chunkCountFor, MAX_CONTENT_BYTES, ENCLAVE_BATCH_BUDGET, type ChipotleChunk, type ChipotlePayload } from "@/lib/litConditions";
 import { runLadderAction, litEnv } from "@/lib/chipotle";
 
 export const runtime = "nodejs";
@@ -73,13 +73,7 @@ export async function POST(req: NextRequest) {
       new PublicKey(l2Pool), new PublicKey(quoteMint),
     ).toBase58();
 
-    const [l1, quoteMintInfo] = await Promise.all([
-      l1VaultState(conn, l1Pool),
-      conn.getParsedAccountInfo(new PublicKey(quoteMint)),
-    ]);
-    const qData = quoteMintInfo.value?.data;
-    const quoteDecimals: number =
-      (qData && "parsed" in qData ? qData.parsed?.info?.decimals : undefined) ?? 9;
+    const l1 = await l1VaultState(conn, l1Pool);
 
     // Image content is tiered as horizontal CROPS (top→bottom), one
     // complete renderable image per ladder window — byte-prefixes of
@@ -126,22 +120,20 @@ export async function POST(req: NextRequest) {
     }
 
     const chunkCount = parts.length;
-    const ladder = {
-      l1BaselineRaw:  l1.raw,
-      l2QuoteUnitRaw: 10n ** BigInt(quoteDecimals),
-      chunkCount,
-    };
 
-    // Build sealed envelopes: thresholds travel INSIDE the ciphertext.
-    const messages: string[] = parts.map((part, i) => {
-      const { floor, ceiling } = tierThresholds(i, ladder);
-      return JSON.stringify({
+    // Build sealed envelopes: tier index/count + BOTH reserve vault
+    // addresses travel INSIDE the ciphertext (tamper-proof). The enclave
+    // computes r = sqrt(leak/(leak+dontLeak)) from live reserves at every
+    // decrypt and returns the first floor(r·k) tiers — to anyone.
+    const messages: string[] = parts.map((part, i) =>
+      JSON.stringify({
         i,
-        ...(floor   ? { fl: floor,   l1v: l1.vault }     : {}),
-        ...(ceiling ? { ce: ceiling, l2v: l2QuoteVault } : {}),
+        k:    chunkCount,
+        l1v:  l1.vault,
+        l2v:  l2QuoteVault,
         data: Buffer.from(part.bytes).toString("base64"),
-      });
-    });
+      }),
+    );
 
     const { pkpId } = litEnv();
 

@@ -4,7 +4,7 @@
  * Progressive decryption viewer.
  *
  * Tiered (v2) payloads: the content is encrypted in K chunks behind a
- * threshold ladder (hold LEAK + L1/L2 vault thresholds) that the LIT NODES
+ * ratio ladder (reserves of the two curves, skew applied) that the TEE
  * evaluate against live chain state — the server returns only the chunks the
  * market currently allows. What you see here is enforced, not cosmetic.
  *
@@ -12,8 +12,7 @@
  * only slices the display client-side (old behavior, kept for old content).
  */
 import { useState, useEffect } from "react";
-import { litAuthMessage, makeAuthSig, isTieredPayload, type AnyPayload } from "@/lib/litConditions";
-import { connectWallet, type WalletProvider } from "@/lib/deploy/wallet";
+import { isTieredPayload, type AnyPayload } from "@/lib/litConditions";
 
 interface Props {
   encryptedPayloadUrl?: string;
@@ -22,7 +21,7 @@ interface Props {
   totalBytes:  number;
 }
 
-type DecryptState = "idle" | "connecting" | "signing" | "decrypting" | "done" | "error";
+type DecryptState = "idle" | "connecting" | "decrypting" | "done" | "error";
 
 interface TierStatus { index: number; unlocked: boolean; data?: string }
 
@@ -112,37 +111,13 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
       }
       if (payload.contentType) setMime(payload.contentType);
 
-      // 2. Sign auth message browser-side (wallet stays on device).
-      // connectWallet handles Phantom and Solflare (incl. Solflare's delayed
-      // publicKey population) and prompts the connect dialog if needed.
-      setState("signing");
-      let wallet: WalletProvider;
-      try {
-        wallet = await connectWallet();
-      } catch (e) {
-        throw new Error(e instanceof Error ? e.message : "Connect your Solana wallet first");
-      }
-      const pubkey = wallet.publicKey.toBase58();
-
-      // Lit nodes verify an ed25519 signature (hex) over the canonical body
-      const message  = litAuthMessage();
-      let sigBytes: Uint8Array;
-      try {
-        sigBytes = await wallet.signMessage(new TextEncoder().encode(message));
-      } catch (e) {
-        throw new Error(`Wallet signing failed: ${e instanceof Error ? e.message : e}`);
-      }
-      const authSig = makeAuthSig(pubkey, message, sigBytes);
-
       // 3. Server-side decryption — avoids browser Lit SDK failures on mobile
       setState("decrypting");
       const body = tiered
-        ? JSON.stringify({ payload, authSig })
+        ? JSON.stringify({ payload })
         : JSON.stringify({
             ciphertext:        (payload as { ciphertext: string }).ciphertext,
-            dataToEncryptHash: (payload as { dataToEncryptHash: string }).dataToEncryptHash,
             contentType:       payload.contentType,
-            authSig,
           });
       let decryptRes: Response;
       try {
@@ -157,7 +132,6 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
 
       if (!decryptRes.ok) {
         const { error } = await decryptRes.json().catch(() => ({ error: `HTTP ${decryptRes.status}` }));
-        if (decryptRes.status === 403) throw new Error("Access denied — you need LEAK tokens");
         throw new Error(`Decryption failed: ${error}`);
       }
 
@@ -331,9 +305,8 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
 
       {/* State indicator */}
       <div className="text-xs font-mono text-white/40 text-center">
-        {state === "idle"      && `${leakPct}% revealed — hold LEAK to decrypt`}
+        {state === "idle"      && `${leakPct}% revealed — the market decides, anyone can decrypt`}
         {state === "connecting" && "Connecting to Lit Protocol…"}
-        {state === "signing"   && "Sign message in wallet to authorize…"}
         {state === "decrypting" && "Asking Lit nodes which tiers the market unlocked…"}
       </div>
 
@@ -351,12 +324,11 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
         {state === "idle" || state === "error"
           ? "Decrypt with Lit Protocol →"
           : state === "connecting"  ? "Connecting…"
-          : state === "signing"     ? "Waiting for signature…"
           : "Decrypting…"}
       </button>
 
       <p className="text-center text-[10px] text-white/20 font-mono">
-        Requires LEAK · tier ladder enforced by Lit Protocol
+        Reveal ratio = curve reserves · enforced in the Lit TEE
       </p>
     </div>
   );
