@@ -54,6 +54,10 @@ const COMMON = {
   },
 };
 
+// Curve market caps are in QUOTE TOKENS (stable quote = LEAK; ~1M ≈ 1 SOL).
+const STABLE_INITIAL_MC   = Number(process.env.STABLE_INITIAL_MC   ?? 1_000_000);
+const STABLE_MIGRATION_MC = Number(process.env.STABLE_MIGRATION_MC ?? 1_000_000_000);
+
 function buildStableCurve(quoteDecimals: number) {
   return buildCurveWithMarketCap({
     token: {
@@ -71,7 +75,7 @@ function buildStableCurve(quoteDecimals: number) {
     },
     ...COMMON,
     activationType: ActivationType.Slot,
-    initialMarketCap: 11, migrationMarketCap: 1100,
+    initialMarketCap: STABLE_INITIAL_MC, migrationMarketCap: STABLE_MIGRATION_MC,
   });
 }
 
