@@ -4,16 +4,22 @@
  *
  * The package is ESM ("type": "module") but its exports map points the
  * `require` condition of entries like "./prod/datil.js" at the ESM .js
- * file instead of the .cjs sibling it also ships. CJS consumers
- * (@lit-protocol/constants' mappers.js) then crash with ERR_REQUIRE_ESM.
+ * file, so CJS consumers (@lit-protocol/constants' mappers.js) crash with
+ * ERR_REQUIRE_ESM. The shipped .cjs siblings exist but export the bare
+ * object (module.exports = {config, data}) while consumers expect the
+ * ESM named export (e.g. `datil`), so simply repointing `require` at the
+ * .cjs silently yields `undefined` and "Unsupported network: datil".
  *
- * This rewrites each `require` condition to the .cjs file when one exists.
- * Runs from `postinstall`; safe to run repeatedly.
+ * This generates a `<name>.compat.cjs` shim per entry that re-exports the
+ * .cjs object under the ESM export name, and points the `require`
+ * condition at it. Runs from `postinstall`; idempotent.
  */
 import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
+const requireCjs = createRequire(import.meta.url);
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const scope   = join(webRoot, "node_modules", "@lit-protocol");
 
@@ -35,14 +41,34 @@ for (const root of candidates) {
 
   let changed = false;
   for (const value of Object.values(pkg.exports)) {
-    if (!value || typeof value !== "object" || typeof value.require !== "string") continue;
-    if (!value.require.endsWith(".js")) continue;
-    const cjs = value.require.slice(0, -3) + ".cjs";
-    if (existsSync(join(root, cjs))) {
-      value.require = cjs;
-      changed = true;
+    if (!value || typeof value !== "object" || typeof value.import !== "string") continue;
+    if (!value.import.endsWith(".js")) continue;
+
+    const esmAbs = join(root, value.import);
+    const cjsRel = value.import.slice(0, -3) + ".cjs";
+    const cjsAbs = join(root, cjsRel);
+    if (!existsSync(esmAbs) || !existsSync(cjsAbs)) continue;
+
+    // The broken entries each declare exactly one `export const <name>`.
+    const names = [...readFileSync(esmAbs, "utf8").matchAll(/^export const (\w+)/gm)].map((m) => m[1]);
+    if (names.length !== 1) continue;
+    const name = names[0];
+
+    // If the .cjs already has the named export (a real CJS build), point at it.
+    let cjsMod;
+    try { cjsMod = requireCjs(cjsAbs); } catch { continue; }
+    if (cjsMod && typeof cjsMod === "object" && name in cjsMod) {
+      if (value.require !== cjsRel) { value.require = cjsRel; changed = true; }
+      continue;
     }
+
+    // Otherwise generate a shim mapping the ESM export name onto the bare object.
+    const shimRel = value.import.slice(0, -3) + ".compat.cjs";
+    const shimAbs = join(root, shimRel);
+    writeFileSync(shimAbs, `module.exports = { ${name}: require(${JSON.stringify("./" + basename(cjsAbs))}) };\n`);
+    if (value.require !== shimRel) { value.require = shimRel; changed = true; }
   }
+
   if (changed) {
     writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
     patched++;
