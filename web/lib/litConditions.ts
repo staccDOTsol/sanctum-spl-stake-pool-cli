@@ -150,10 +150,12 @@ export function tierConditions(i: number, p: TierParams): ConditionSet {
  * decrypt per view, so tier count scales credits + action time linearly.
  */
 export function chunkCountFor(totalBytes: number, requested?: number): number {
-  // Measured on Chipotle: 32 tiers encrypt in ~1.2s (time is not the
-  // constraint); the binding limit is the ~1MB action response cap, which
-  // scales with TOTAL content size, not tier count.
-  const max = Number(process.env.LIT_MAX_TIERS ?? 48);
+  // Measured on Chipotle: 512 encrypts run in one execution in ~3.2s
+  // (~5ms/tier), and the ~1MB per-execution size cap is handled by
+  // batching. The practical limit is decrypt latency per page view
+  // (every view re-runs the ladder) — 256 keeps views snappy; push
+  // LIT_MAX_TIERS higher if you accept slower reveals.
+  const max = Number(process.env.LIT_MAX_TIERS ?? 256);
   if (requested && Number.isFinite(requested) && requested > 0) {
     return Math.max(2, Math.min(Math.floor(requested), max));
   }
@@ -161,10 +163,15 @@ export function chunkCountFor(totalBytes: number, requested?: number): number {
 }
 
 /**
- * Ciphertext ≈ 2.7× the original bytes and Chipotle caps an action's
- * response around 1MB — content beyond this needs batched executions.
+ * Chipotle caps a single action's request/response around 1MB, so encrypt
+ * and decrypt run in BATCHES of executions sized under that budget.
+ * The remaining ceiling is Vercel's ~4.5MB function response (the payload
+ * JSON is ~2.7× the input), hence the default content cap.
  */
-export const MAX_CONTENT_BYTES = Number(process.env.LIT_MAX_CONTENT_BYTES ?? 320_000);
+export const MAX_CONTENT_BYTES = Number(process.env.LIT_MAX_CONTENT_BYTES ?? 1_500_000);
+
+/** Per-execution byte budget for enclave request/response payloads. */
+export const ENCLAVE_BATCH_BUDGET = Number(process.env.LIT_BATCH_BUDGET ?? 600_000);
 
 /**
  * Numeric ladder thresholds for chunk i (used by the Chipotle TEE action,

@@ -18,7 +18,7 @@
  * network's threshold keys are gone). They get a clear 410 response.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { isChipotlePayload, isTieredPayload, LEAK_MINT } from "@/lib/litConditions";
+import { isChipotlePayload, isTieredPayload, LEAK_MINT, ENCLAVE_BATCH_BUDGET } from "@/lib/litConditions";
 import { runLadderAction, litEnv } from "@/lib/chipotle";
 
 export const runtime = "nodejs";
@@ -46,19 +46,40 @@ export async function POST(req: NextRequest) {
       const payload = body.payload;
       const { pkpId } = litEnv();
 
-      const result = await runLadderAction<{ chunks: ActionChunk[] }>({
-        op:          "decrypt",
-        pkpId,
-        rpcUrl:      RPC,
-        leakMint:    LEAK_MINT,
-        authSig:     body.authSig,
-        ciphertexts: payload.chunks.map((c) => c.ciphertext),
-      }).catch((e: Error) => {
-        if (/ACCESS_DENIED_NO_LEAK/.test(e.message)) {
-          throw Object.assign(new Error("Access denied — you need LEAK tokens to decrypt"), { status: 403 });
+      // The enclave caps request/response around 1MB — decrypt in batches
+      // (request side carries the ciphertexts; response the plaintexts) and
+      // remap each batch's relative indexes back to payload positions.
+      const all = payload.chunks.map((c) => c.ciphertext);
+      const batches: { start: number; ciphertexts: string[] }[] = [];
+      let start = 0, cur: string[] = [], budget = 0;
+      for (let i = 0; i < all.length; i++) {
+        const cost = all[i].length + Math.ceil(all[i].length / 2) + 256; // request + response
+        if (cur.length > 0 && budget + cost > ENCLAVE_BATCH_BUDGET) {
+          batches.push({ start, ciphertexts: cur });
+          start = i; cur = []; budget = 0;
         }
-        throw e;
-      });
+        cur.push(all[i]); budget += cost;
+      }
+      if (cur.length) batches.push({ start, ciphertexts: cur });
+
+      const merged: ActionChunk[] = [];
+      for (const batch of batches) {
+        const out = await runLadderAction<{ chunks: ActionChunk[] }>({
+          op:          "decrypt",
+          pkpId,
+          rpcUrl:      RPC,
+          leakMint:    LEAK_MINT,
+          authSig:     body.authSig,
+          ciphertexts: batch.ciphertexts,
+        }).catch((e: Error) => {
+          if (/ACCESS_DENIED_NO_LEAK/.test(e.message)) {
+            throw Object.assign(new Error("Access denied — you need LEAK tokens to decrypt"), { status: 403 });
+          }
+          throw e;
+        });
+        for (const c of out.chunks) merged.push({ ...c, index: c.index + batch.start });
+      }
+      const result = { chunks: merged };
 
       const byIndex  = new Map(result.chunks.map((c) => [c.index, c]));
       const isStrips = payload.mode === "image-strips";

@@ -24,7 +24,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { deriveDbcTokenVaultAddress } from "@meteora-ag/dynamic-bonding-curve-sdk";
-import { chunkCountFor, tierThresholds, MAX_CONTENT_BYTES, type ChipotleChunk, type ChipotlePayload } from "@/lib/litConditions";
+import { chunkCountFor, tierThresholds, MAX_CONTENT_BYTES, ENCLAVE_BATCH_BUDGET, type ChipotleChunk, type ChipotlePayload } from "@/lib/litConditions";
 import { runLadderAction, litEnv } from "@/lib/chipotle";
 
 export const runtime = "nodejs";
@@ -144,13 +144,34 @@ export async function POST(req: NextRequest) {
     });
 
     const { pkpId } = litEnv();
-    const { ciphertexts } = await runLadderAction<{ ciphertexts: string[] }>({
-      op: "encrypt",
-      pkpId,
-      messages,
-    });
-    if (!Array.isArray(ciphertexts) || ciphertexts.length !== chunkCount) {
-      throw new Error("Chipotle encrypt returned an unexpected result");
+
+    // The enclave caps request/response around 1MB — encrypt in batches
+    // sized so each execution's response (ciphertext ≈ 2× envelope) fits.
+    const batches: string[][] = [];
+    let current: string[] = [], budget = 0;
+    for (const m of messages) {
+      const cost = m.length * 2 + 256;
+      if (current.length > 0 && budget + cost > ENCLAVE_BATCH_BUDGET) {
+        batches.push(current); current = []; budget = 0;
+      }
+      current.push(m); budget += cost;
+    }
+    if (current.length) batches.push(current);
+
+    const ciphertexts: string[] = [];
+    for (const batch of batches) {
+      const out = await runLadderAction<{ ciphertexts: string[] }>({
+        op: "encrypt",
+        pkpId,
+        messages: batch,
+      });
+      if (!Array.isArray(out.ciphertexts) || out.ciphertexts.length !== batch.length) {
+        throw new Error("Chipotle encrypt returned an unexpected result");
+      }
+      ciphertexts.push(...out.ciphertexts);
+    }
+    if (ciphertexts.length !== chunkCount) {
+      throw new Error("Chipotle encrypt batch mismatch");
     }
 
     const chunks: ChipotleChunk[] = ciphertexts.map((ciphertext, i) => ({
