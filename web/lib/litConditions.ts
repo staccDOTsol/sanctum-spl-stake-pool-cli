@@ -148,6 +148,24 @@ export function chunkCountFor(totalBytes: number): number {
   return Math.max(4, Math.min(12, Math.ceil(totalBytes / 16_384)));
 }
 
+/**
+ * Numeric ladder thresholds for chunk i (used by the Chipotle TEE action,
+ * which seals them inside each chunk's ciphertext):
+ *   floor   — L1 leak vault must hold ≥ baseline·1.15^i raw units
+ *   ceiling — L2 dontLeak vault must hold < unit·2^(K-1-i) raw units
+ * Chunk 0 has no thresholds (LEAK-holding alone gates it).
+ */
+export function tierThresholds(
+  i: number,
+  p: { l1BaselineRaw: bigint; l2QuoteUnitRaw: bigint; chunkCount: number },
+): { floor?: string; ceiling?: string } {
+  if (i === 0) return {};
+  const base  = Number(p.l1BaselineRaw < 1n ? 1n : p.l1BaselineRaw);
+  const floor = BigInt(Math.ceil(base * Math.pow(LEAK_GROWTH_PER_TIER, i))).toString();
+  const ceiling = (SUPPRESS_BASE_UNITS * p.l2QuoteUnitRaw * (1n << BigInt(p.chunkCount - 1 - i))).toString();
+  return { floor, ceiling };
+}
+
 /* ------------------------------------------------------------------ */
 /* Payload formats                                                     */
 /* ------------------------------------------------------------------ */
@@ -171,7 +189,7 @@ export interface EncryptedChunk {
   conditions:        ConditionSet;
 }
 
-/** Tiered payload (v2): many small chunks behind a threshold ladder. */
+/** Tiered payload (v2, datil — UNRECOVERABLE since the network sunset). */
 export interface TieredPayload {
   version:      2;
   contentType:  string;
@@ -182,10 +200,36 @@ export interface TieredPayload {
   chunks:       EncryptedChunk[];
 }
 
-export type AnyPayload = EncryptedPayload | TieredPayload;
+export interface ChipotleChunk {
+  index:      number;
+  offset:     number;
+  length:     number;
+  /** Lit.Actions.encrypt output; the chunk's thresholds + vault addresses
+   *  are sealed INSIDE the ciphertext (tamper-proof). */
+  ciphertext: string;
+}
 
-export function isTieredPayload(p: unknown): p is TieredPayload {
-  return !!p && typeof p === "object" && (p as TieredPayload).version === 2 && Array.isArray((p as TieredPayload).chunks);
+/** Tiered payload (v3, Chipotle): TEE-enforced threshold ladder. */
+export interface ChipotlePayload {
+  version:      3;
+  contentType:  string;
+  filename?:    string;
+  totalBytes:   number;
+  l1QuoteVault: string;
+  l2QuoteVault: string;
+  chunks:       ChipotleChunk[];
+}
+
+export type AnyPayload = EncryptedPayload | TieredPayload | ChipotlePayload;
+
+export function isTieredPayload(p: unknown): p is TieredPayload | ChipotlePayload {
+  const v = (p as TieredPayload | ChipotlePayload | null)?.version;
+  return !!p && typeof p === "object" && (v === 2 || v === 3)
+    && Array.isArray((p as TieredPayload).chunks);
+}
+
+export function isChipotlePayload(p: unknown): p is ChipotlePayload {
+  return isTieredPayload(p) && p.version === 3;
 }
 
 /* ------------------------------------------------------------------ */
