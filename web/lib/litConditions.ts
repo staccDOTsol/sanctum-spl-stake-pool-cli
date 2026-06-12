@@ -2,47 +2,195 @@
  * Shared Lit Protocol access-control conditions for leak.markets.
  *
  * IMPORTANT: encrypt and decrypt must use byte-identical conditions — the
- * condition hash is baked into the ciphertext identity. Both API routes and
- * any client helper import from here; never inline a copy.
+ * condition hash is baked into the ciphertext identity. Tiered (v2) payloads
+ * embed each chunk's conditions in the payload itself, which is safe: a
+ * tampered condition changes the identity hash and the ciphertext simply
+ * fails to decrypt. Legacy (v1) payloads use makeLeakConditions() on both
+ * sides; never inline a copy.
  *
  * Isomorphic: no Lit SDK imports, safe in both server routes and client code.
  */
 
 export const LEAK_MINT = "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS";
 
+/* ------------------------------------------------------------------ */
+/* Condition builders                                                  */
+/* ------------------------------------------------------------------ */
+
+export interface SolRpcCondition {
+  conditionType: "solRpc";
+  method:        string;
+  params:        string[];
+  pdaParams:     string[];
+  pdaInterface:  { offset: number; fields: Record<string, unknown> };
+  pdaKey:        string;
+  chain:         "solana";
+  returnValueTest: { key: string; comparator: string; value: string };
+}
+export interface ConditionOperator { operator: "and" | "or" }
+export type ConditionSet = (SolRpcCondition | ConditionOperator)[];
+
 /**
- * Solana RPC condition: viewer wallet holds ≥1 LEAK token.
+ * Solana RPC condition: viewer wallet holds ≥1 raw unit of LEAK.
  *
  * Notes on format (Lit datil / SDK v7):
  * - param objects must be JSON-encoded strings (LPACC_SOL schema requires
  *   string items; the nodes parse them).
  * - LEAK is a Token-2022 mint, so we filter getTokenAccountsByOwner by
  *   `mint` (program-agnostic) rather than the legacy token programId.
- * - The nodes apply returnValueTest.key to the RPC result's `value` array,
- *   so the JSONPath is rooted at the array — not `$.value[...]`.
+ * - The nodes apply returnValueTest.key to the RPC result's `value`,
+ *   so JSONPaths are rooted there — not at `$.value[...]`.
  */
-export function makeLeakConditions() {
-  return [
-    {
-      conditionType: "solRpc" as const,
-      method:        "getTokenAccountsByOwner",
-      params: [
-        ":userAddress",
-        JSON.stringify({ mint: LEAK_MINT }),
-        JSON.stringify({ encoding: "jsonParsed" }),
-      ],
-      pdaParams:    [] as string[],
-      pdaInterface: { offset: 0, fields: {} as Record<string, unknown> },
-      pdaKey:  "",
-      chain:   "solana" as const,
-      returnValueTest: {
-        key:        `$[?(@.account.data.parsed.info.mint == '${LEAK_MINT}')].account.data.parsed.info.tokenAmount.amount`,
-        comparator: ">" as const,
-        value:      "0",
-      },
+export function holdsLeakCondition(): SolRpcCondition {
+  return {
+    conditionType: "solRpc",
+    method:        "getTokenAccountsByOwner",
+    params: [
+      ":userAddress",
+      JSON.stringify({ mint: LEAK_MINT }),
+      JSON.stringify({ encoding: "jsonParsed" }),
+    ],
+    pdaParams:    [],
+    pdaInterface: { offset: 0, fields: {} },
+    pdaKey:  "",
+    chain:   "solana",
+    returnValueTest: {
+      key:        `$[?(@.account.data.parsed.info.mint == '${LEAK_MINT}')].account.data.parsed.info.tokenAmount.amount`,
+      comparator: ">",
+      value:      "0",
     },
+  };
+}
+
+/**
+ * Condition on a token account's raw balance (e.g. a DBC pool vault).
+ * getTokenAccountBalance's result.value is { amount, decimals, … } and the
+ * nodes root JSONPaths at result.value, hence "$.amount".
+ */
+export function vaultBalanceCondition(
+  vaultAddress: string,
+  comparator:   ">=" | "<" | ">" | "<=",
+  rawAmount:    string,
+): SolRpcCondition {
+  return {
+    conditionType: "solRpc",
+    method:        "getTokenAccountBalance",
+    params:        [vaultAddress],
+    pdaParams:     [],
+    pdaInterface:  { offset: 0, fields: {} },
+    pdaKey:  "",
+    chain:   "solana",
+    returnValueTest: { key: "$.amount", comparator, value: rawAmount },
+  };
+}
+
+/** Legacy (v1) condition set: just hold LEAK. */
+export function makeLeakConditions(): ConditionSet {
+  return [holdsLeakCondition()];
+}
+
+/* ------------------------------------------------------------------ */
+/* Tier ladder                                                         */
+/* ------------------------------------------------------------------ */
+
+export interface TierParams {
+  /** L1 leak-side quote vault (LEAK buys deposit here). */
+  l1QuoteVault: string;
+  /** This content's L2 quote vault (DontLeak buys deposit here). */
+  l2QuoteVault: string;
+  /** L1 vault raw balance at encrypt time (ladder baseline). */
+  l1BaselineRaw: bigint;
+  /** One whole quote token of the L2 pool, in raw units (10^decimals). */
+  l2QuoteUnitRaw: bigint;
+  /** Total chunks. */
+  chunkCount: number;
+}
+
+/** Leak-side growth per tier: tier i needs the L1 vault ≥ baseline·1.15^i. */
+const LEAK_GROWTH_PER_TIER = 1.15;
+/**
+ * Suppression base: locking the LAST chunk takes 1 quote token in the L2
+ * vault; each earlier chunk doubles the required suppression capital —
+ * exponential cost to suppress more of the content.
+ */
+const SUPPRESS_BASE_UNITS = 1n;
+
+/**
+ * Conditions for chunk i of chunkCount:
+ *  - chunk 0: hold LEAK (the gate to view anything at all)
+ *  - chunk i≥1: hold LEAK
+ *               AND L1 leak vault ≥ baseline·1.15^i   (leak capital unlocks)
+ *               AND L2 dontLeak vault < base·2^(K-1-i) (suppression re-locks,
+ *                                                       tail chunks first)
+ * All thresholds are enforced by the Lit nodes against live chain state at
+ * decrypt time — the market vote moves chunks in AND out of reach.
+ */
+export function tierConditions(i: number, p: TierParams): ConditionSet {
+  if (i === 0) return [holdsLeakCondition()];
+
+  const floor = (() => {
+    const f = Number(p.l1BaselineRaw < 1n ? 1n : p.l1BaselineRaw) * Math.pow(LEAK_GROWTH_PER_TIER, i);
+    return BigInt(Math.ceil(f)).toString();
+  })();
+  const ceiling = (SUPPRESS_BASE_UNITS * p.l2QuoteUnitRaw * (1n << BigInt(p.chunkCount - 1 - i))).toString();
+
+  return [
+    holdsLeakCondition(),
+    { operator: "and" },
+    vaultBalanceCondition(p.l1QuoteVault, ">=", floor),
+    { operator: "and" },
+    vaultBalanceCondition(p.l2QuoteVault, "<", ceiling),
   ];
 }
+
+/** Chunking policy: ~16 KiB chunks, between 4 and 12 of them. */
+export function chunkCountFor(totalBytes: number): number {
+  return Math.max(4, Math.min(12, Math.ceil(totalBytes / 16_384)));
+}
+
+/* ------------------------------------------------------------------ */
+/* Payload formats                                                     */
+/* ------------------------------------------------------------------ */
+
+/** Legacy single-ciphertext payload (v1). */
+export interface EncryptedPayload {
+  ciphertext:        string; // base64
+  dataToEncryptHash: string; // hex
+  contentType:       string; // MIME
+  filename?:         string;
+}
+
+export interface EncryptedChunk {
+  index:             number;
+  offset:            number;
+  length:            number;
+  ciphertext:        string;
+  dataToEncryptHash: string;
+  /** Exact conditions this chunk was encrypted under (tamper-proof: the
+   *  condition hash is part of the ciphertext identity). */
+  conditions:        ConditionSet;
+}
+
+/** Tiered payload (v2): many small chunks behind a threshold ladder. */
+export interface TieredPayload {
+  version:      2;
+  contentType:  string;
+  filename?:    string;
+  totalBytes:   number;
+  l1QuoteVault: string;
+  l2QuoteVault: string;
+  chunks:       EncryptedChunk[];
+}
+
+export type AnyPayload = EncryptedPayload | TieredPayload;
+
+export function isTieredPayload(p: unknown): p is TieredPayload {
+  return !!p && typeof p === "object" && (p as TieredPayload).version === 2 && Array.isArray((p as TieredPayload).chunks);
+}
+
+/* ------------------------------------------------------------------ */
+/* Auth                                                                */
+/* ------------------------------------------------------------------ */
 
 /**
  * The canonical Lit auth message body for Solana wallets (what the SDK's
@@ -65,11 +213,4 @@ export function makeAuthSig(
     signedMessage: message,
     address:       pubkey,
   };
-}
-
-export interface EncryptedPayload {
-  ciphertext:        string; // base64
-  dataToEncryptHash: string; // hex
-  contentType:       string; // MIME
-  filename?:         string;
 }

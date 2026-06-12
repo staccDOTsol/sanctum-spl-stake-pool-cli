@@ -4,7 +4,7 @@ import { useState, useRef } from "react";
 import { Connection } from "@solana/web3.js";
 import { put } from "@vercel/blob/client";
 import { connectWallet, type WalletProvider } from "@/lib/deploy/wallet";
-import { deployPool2, LEAK_MINT, RFREESTACC_MINT, MEME_QUOTE_MINT, STABLE_L1_POOL, MEME_L1_POOL, type PoolTypeChoice } from "@/lib/deploy/transactions";
+import { deployPool2, prepareDeployment, LEAK_MINT, RFREESTACC_MINT, MEME_QUOTE_MINT, STABLE_L1_POOL, MEME_L1_POOL, type PoolTypeChoice } from "@/lib/deploy/transactions";
 
 const RPC = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
 
@@ -97,18 +97,27 @@ export default function LaunchPage() {
     try {
       const conn = new Connection(RPC, "confirmed");
 
+      // Keypairs + pool address first: the encryption threshold ladder is
+      // bound to THIS content's pool, which is derivable before deployment.
+      const prepared = await prepareDeployment(poolType);
+      addLog(`Pool address derived: ${prepared.pool2Address.slice(0, 12)}…`);
+
       let fileUrl = "";
       if (form.file) {
-        addLog(`Encrypting ${form.file.name} with Lit Protocol…`);
+        addLog(`Encrypting ${form.file.name} in tiered chunks (Lit threshold ladder)…`);
         // Server-side encryption — avoids browser Lit SDK failures on mobile
         const fd = new FormData();
         fd.append("file", form.file);
+        fd.append("l2Pool", prepared.pool2Address);
+        fd.append("quoteMint", prepared.quoteMint);
+        if (prepared.l1Pool) fd.append("l1Pool", prepared.l1Pool);
         const encRes = await fetch("/api/lit/encrypt", { method: "POST", body: fd });
         if (!encRes.ok) {
           const { error } = await encRes.json().catch(() => ({ error: "Encryption failed" }));
           throw new Error(error);
         }
         const encrypted   = await encRes.json();
+        addLog(`✓ ${encrypted.chunks?.length ?? 1} encrypted tiers, ladder enforced by Lit`);
         const payloadJson = JSON.stringify(encrypted);
         const payloadFile = new File([payloadJson], "encrypted-payload.json", { type: "application/json" });
         const pathname    = `content/${Date.now()}-${form.file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}.enc.json`;
@@ -118,8 +127,8 @@ export default function LaunchPage() {
 
       const slug       = form.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24);
       const symbol     = ("DL" + slug.replace(/-/g, "").toUpperCase()).slice(0, 8);
-      const quoteMint  = poolType === "meme" ? MEME_QUOTE_MINT.toBase58() : RFREESTACC_MINT.toBase58();
-      const l1Pool     = poolType === "meme" ? MEME_L1_POOL : STABLE_L1_POOL;
+      const quoteMint  = prepared.quoteMint;
+      const l1Pool     = prepared.l1Pool;
       const totalBytes = form.file?.size ?? 0;
 
       // Metadata attributes cover everything needed for on-chain registry reconstruction.
@@ -152,6 +161,7 @@ export default function LaunchPage() {
         symbol,
         uri:      metaUrl,
         poolType,
+        prepared, // same keypairs the ladder was bound to
       });
 
       setResult({ pool2Address: deployResult.pool2Address, dontLeakMint: deployResult.dontLeakMint });

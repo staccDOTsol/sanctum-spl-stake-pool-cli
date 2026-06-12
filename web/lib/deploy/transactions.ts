@@ -24,6 +24,35 @@ export const MEME_L1_POOL   = process.env.NEXT_PUBLIC_MEME_L1_POOL   ?? "";
 
 export type PoolTypeChoice = "stable" | "meme";
 
+export interface PreparedDeployment {
+  configKp:     Keypair;
+  dontLeakKp:   Keypair;
+  /** Deterministic — derivable before the pool exists on-chain. */
+  pool2Address: string;
+  quoteMint:    string;
+  l1Pool:       string;
+}
+
+/**
+ * Generate the deployment keypairs and derive the pool address up front,
+ * so encryption can bind its threshold ladder to this content's pool
+ * BEFORE anything is broadcast.
+ */
+export async function prepareDeployment(poolType: PoolTypeChoice): Promise<PreparedDeployment> {
+  const { deriveDbcPoolAddress } = await import("@meteora-ag/dynamic-bonding-curve-sdk");
+  const configKp   = Keypair.generate();
+  const dontLeakKp = Keypair.generate();
+  const quoteMint  = poolType === "meme" ? MEME_QUOTE_MINT : RFREESTACC_MINT;
+  const pool2Address = deriveDbcPoolAddress(quoteMint, dontLeakKp.publicKey, configKp.publicKey);
+  return {
+    configKp,
+    dontLeakKp,
+    pool2Address: pool2Address.toBase58(),
+    quoteMint:    quoteMint.toBase58(),
+    l1Pool:       poolType === "meme" ? MEME_L1_POOL : STABLE_L1_POOL,
+  };
+}
+
 export interface DeployPool2Result {
   dontLeakMint: string;
   pool2Address: string;
@@ -34,10 +63,10 @@ export interface DeployPool2Result {
 export async function deployPool2(
   conn: Connection,
   wallet: WalletProvider,
-  opts: { name: string; symbol: string; uri: string; poolType: PoolTypeChoice },
+  opts: { name: string; symbol: string; uri: string; poolType: PoolTypeChoice; prepared?: PreparedDeployment },
 ): Promise<DeployPool2Result> {
-  const configKp   = Keypair.generate();
-  const dontLeakKp = Keypair.generate();
+  const configKp   = opts.prepared?.configKp   ?? Keypair.generate();
+  const dontLeakKp = opts.prepared?.dontLeakKp ?? Keypair.generate();
 
   const res = await fetch("/api/deploy/pool2", {
     method: "POST",

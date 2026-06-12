@@ -81,3 +81,32 @@ async function tryDecrypt(label, sigStr) {
 await tryDecrypt("hex sig (fixed)", Buffer.from(sig).toString("hex"));
 await tryDecrypt("base64 sig (old bug)", Buffer.from(sig).toString("base64"));
 process.exit(0);
+
+/* ---- Tiered ladder smoke (v2): encrypt one chunk behind vault thresholds
+ * chosen to PASS right now, so only the holds-LEAK clause gates it. ---- */
+const vaultCond = (addr, comparator, value) => ({
+  conditionType: "solRpc", method: "getTokenAccountBalance", params: [addr],
+  pdaParams: [], pdaInterface: { offset: 0, fields: {} }, pdaKey: "", chain: "solana",
+  returnValueTest: { key: "$.amount", comparator, value },
+});
+const L1_VAULT = "CFNWyztk8gCpjdX5DNiw2opwMNq7wMcHAbyiG3283ywg"; // ze1Hvk quote vault
+const tierSet = [
+  makeLeakConditions()[0],
+  { operator: "and" },
+  vaultCond(L1_VAULT, ">=", "1"),                       // passes while vault > 0
+  { operator: "and" },
+  vaultCond(L1_VAULT, "<", "999999999999999999"),       // effectively no ceiling
+];
+const tierEnc = await client.encrypt({ solRpcConditions: tierSet, dataToEncrypt: plaintext });
+console.log("✓ tier chunk encrypted, hash =", tierEnc.dataToEncryptHash.slice(0, 16) + "…");
+try {
+  const res = await client.decrypt({
+    solRpcConditions: tierSet, ciphertext: tierEnc.ciphertext,
+    dataToEncryptHash: tierEnc.dataToEncryptHash,
+    authSig: { sig: Buffer.from(sig).toString("hex"), derivedVia: "solana.signMessage", signedMessage: message, address: pubkey },
+    chain: "solana",
+  });
+  console.log("[tier] decrypted:", new TextDecoder().decode(res.decryptedData));
+} catch (e) {
+  console.log("[tier] error (expect access-denied w/o LEAK):", String(e?.message).slice(0, 200));
+}

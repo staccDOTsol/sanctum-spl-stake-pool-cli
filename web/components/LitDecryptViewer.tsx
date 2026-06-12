@@ -1,15 +1,18 @@
 "use client";
 
 /**
- * Progressively decrypts content using Lit Protocol, revealing
- * Math.floor(ratio * totalBytes) bytes proportional to the market ratio.
+ * Progressive decryption viewer.
  *
- * Access: viewer must hold ≥1 LEAK token on Solana.
- * "Don't store OG facts": the encrypted payload URL points to a JSON blob
- * containing only { ciphertext, dataToEncryptHash, contentType }, never plaintext.
+ * Tiered (v2) payloads: the content is encrypted in K chunks behind a
+ * threshold ladder (hold LEAK + L1/L2 vault thresholds) that the LIT NODES
+ * evaluate against live chain state — the server returns only the chunks the
+ * market currently allows. What you see here is enforced, not cosmetic.
+ *
+ * Legacy (v1) payloads: single ciphertext gated on holding LEAK; the ratio
+ * only slices the display client-side (old behavior, kept for old content).
  */
 import { useState, useEffect } from "react";
-import { litAuthMessage, makeAuthSig, type EncryptedPayload } from "@/lib/litConditions";
+import { litAuthMessage, makeAuthSig, isTieredPayload, type AnyPayload } from "@/lib/litConditions";
 import { connectWallet, type WalletProvider } from "@/lib/deploy/wallet";
 
 interface Props {
@@ -20,6 +23,8 @@ interface Props {
 }
 
 type DecryptState = "idle" | "connecting" | "signing" | "decrypting" | "done" | "error";
+
+interface TierStatus { index: number; unlocked: boolean }
 
 function formatBytes(n: number) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)} MB`;
@@ -42,18 +47,29 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
   const [error, setError]         = useState<string | null>(null);
   const [decrypted, setDecrypted] = useState<Uint8Array | null>(null);
   const [dataUrl, setDataUrl]     = useState<string | null>(null);
+  const [imgBroken, setImgBroken] = useState(false);
   // Real MIME type from the encrypted payload (the prop may be a legacy
   // form value like "png"); set once the payload JSON is fetched.
   const [mime, setMime]           = useState<string | null>(null);
+  // Tiered payloads: per-chunk lock state from the Lit nodes
+  const [tiers, setTiers]         = useState<TierStatus[] | null>(null);
 
-  const revealedBytes = Math.floor(ratio * totalBytes);
-  const leakPct       = Math.round(ratio * 100);
+  const isTiered = tiers !== null;
+  // Tiered: the unlocked prefix IS the revealed amount (Lit-enforced).
+  // Legacy: ratio slices the display client-side.
+  const revealedBytes = isTiered
+    ? (decrypted?.length ?? 0)
+    : Math.floor(ratio * totalBytes);
+  const leakPct = isTiered
+    ? Math.round(totalBytes > 0 ? (revealedBytes / totalBytes) * 100 : 0)
+    : Math.round(ratio * 100);
   const effectiveType = mime ?? contentType;
   const kind          = contentKind(effectiveType);
 
   // Build preview once decrypted
   useEffect(() => {
     if (!decrypted) return;
+    setImgBroken(false);
     const slice = decrypted.slice(0, revealedBytes);
     if (kind === "text") {
       // text/document: show as UTF-8
@@ -74,16 +90,17 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
     setError(null);
     try {
       // 1. Fetch the encrypted payload JSON from Blob
-      let payload: EncryptedPayload;
+      let payload: AnyPayload;
       try {
         const res = await fetch(encryptedPayloadUrl, { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        payload = await res.json() as EncryptedPayload;
+        payload = await res.json() as AnyPayload;
       } catch (e) {
         throw new Error(`Could not fetch encrypted payload: ${e instanceof Error ? e.message : e}`);
       }
 
-      if (!payload.ciphertext || !payload.dataToEncryptHash) {
+      const tiered = isTieredPayload(payload);
+      if (!tiered && !("ciphertext" in payload && payload.ciphertext && payload.dataToEncryptHash)) {
         // Backward-compat: raw file (pre-Lit content) — show directly
         const raw = await fetch(encryptedPayloadUrl, { cache: "no-store" });
         const buf = await raw.arrayBuffer();
@@ -117,17 +134,20 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
 
       // 3. Server-side decryption — avoids browser Lit SDK failures on mobile
       setState("decrypting");
+      const body = tiered
+        ? JSON.stringify({ payload, authSig })
+        : JSON.stringify({
+            ciphertext:        (payload as { ciphertext: string }).ciphertext,
+            dataToEncryptHash: (payload as { dataToEncryptHash: string }).dataToEncryptHash,
+            contentType:       payload.contentType,
+            authSig,
+          });
       let decryptRes: Response;
       try {
         decryptRes = await fetch("/api/lit/decrypt", {
           method:  "POST",
           headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify({
-            ciphertext:        payload.ciphertext,
-            dataToEncryptHash: payload.dataToEncryptHash,
-            contentType:       payload.contentType,
-            authSig,
-          }),
+          body,
         });
       } catch (e) {
         throw new Error(`Decrypt request failed: ${e instanceof Error ? e.message : e}`);
@@ -135,12 +155,17 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
 
       if (!decryptRes.ok) {
         const { error } = await decryptRes.json().catch(() => ({ error: `HTTP ${decryptRes.status}` }));
-        if (decryptRes.status === 403) throw new Error("Access denied — you need ≥1 LEAK token");
+        if (decryptRes.status === 403) throw new Error("Access denied — you need LEAK tokens");
         throw new Error(`Decryption failed: ${error}`);
       }
 
-      const { data } = await decryptRes.json() as { data: string };
-      setDecrypted(new Uint8Array(Buffer.from(data, "base64")));
+      const result = await decryptRes.json() as {
+        data: string;
+        chunks?: TierStatus[];
+        unlockedBytes?: number;
+      };
+      setDecrypted(new Uint8Array(Buffer.from(result.data, "base64")));
+      setTiers(result.chunks ?? null);
       setState("done");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Decryption failed");
@@ -148,13 +173,25 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
     }
   }
 
-  // Revealed text preview (proportional to ratio)
+  // Revealed text preview
   const textPreview = (() => {
     if (!decrypted || state !== "done") return null;
     if (kind !== "text") return null;
     const full = new TextDecoder().decode(decrypted);
     return full.slice(0, revealedBytes);
   })();
+
+  // Tier ladder bar: one segment per chunk, green = unlocked by the market
+  const tierBar = isTiered && tiers && tiers.length > 0 && (
+    <div className="flex gap-0.5" title="Tier ladder — each segment is a Lit-enforced threshold">
+      {tiers.map((t) => (
+        <div
+          key={t.index}
+          className={`h-1.5 flex-1 rounded-full ${t.unlocked ? "bg-green-400/80" : "bg-red-500/40"}`}
+        />
+      ))}
+    </div>
+  );
 
   if (!encryptedPayloadUrl) {
     return (
@@ -165,17 +202,21 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
   }
 
   if (state === "done" && decrypted) {
+    const lockedTiers = tiers?.filter((t) => !t.unlocked).length ?? 0;
     return (
       <div className="space-y-2">
         {/* Header */}
         <div className="flex items-center justify-between px-1">
           <span className="text-xs font-mono text-green-400/60">
             {leakPct}% revealed · {formatBytes(revealedBytes)} / {formatBytes(totalBytes)}
+            {isTiered && tiers && ` · ${tiers.length - lockedTiers}/${tiers.length} tiers`}
           </span>
-          {ratio < 1 && (
-            <span className="text-xs text-white/30 font-mono">Buy Leak to reveal more →</span>
+          {revealedBytes < totalBytes && (
+            <span className="text-xs text-white/30 font-mono">Buy Leak to unlock more →</span>
           )}
         </div>
+
+        {tierBar}
 
         {/* Content */}
         {textPreview !== null ? (
@@ -183,15 +224,30 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
             <pre className="p-4 rounded-xl bg-white/3 border border-white/8 text-white/70 text-xs font-mono leading-relaxed overflow-auto max-h-64 whitespace-pre-wrap break-words">
               {textPreview || <span className="text-white/20">[no content revealed yet — buy Leak]</span>}
             </pre>
-            {ratio < 1 && (
+            {revealedBytes < totalBytes && (
               <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-[#0c0c10] to-transparent rounded-b-xl pointer-events-none" />
             )}
           </div>
         ) : dataUrl ? (
           <div className="rounded-xl overflow-hidden border border-white/8">
-            {kind === "image" ? (
+            {kind === "image" && !imgBroken ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={dataUrl} alt="Decrypted content" className="w-full max-h-96 object-contain" />
+              <img
+                src={dataUrl}
+                alt="Decrypted content"
+                className="w-full max-h-96 object-contain"
+                onError={() => setImgBroken(true)}
+              />
+            ) : kind === "image" && imgBroken ? (
+              <div className="p-4 text-white/40 text-xs font-mono space-y-2">
+                <div>
+                  {formatBytes(revealedBytes)} of {formatBytes(totalBytes)} decrypted — not enough of
+                  the image is unlocked to render a preview yet.
+                </div>
+                <a href={dataUrl} download className="inline-block text-green-400 underline">
+                  Download partial bytes
+                </a>
+              </div>
             ) : kind === "audio" ? (
               // eslint-disable-next-line jsx-a11y/media-has-caption
               <audio controls src={dataUrl} className="w-full p-3" />
@@ -208,6 +264,12 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
           <div className="p-4 text-white/30 text-xs font-mono">
             {formatBytes(revealedBytes)} decrypted · unsupported preview type
           </div>
+        )}
+
+        {isTiered && (
+          <p className="text-center text-[10px] text-white/20 font-mono">
+            Tier thresholds enforced by Lit nodes against live pool reserves
+          </p>
         )}
       </div>
     );
@@ -238,7 +300,7 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
         {state === "idle"      && `${leakPct}% revealed — hold LEAK to decrypt`}
         {state === "connecting" && "Connecting to Lit Protocol…"}
         {state === "signing"   && "Sign message in wallet to authorize…"}
-        {state === "decrypting" && "Decrypting with Lit TEE…"}
+        {state === "decrypting" && "Asking Lit nodes which tiers the market unlocked…"}
       </div>
 
       {error && (
@@ -260,7 +322,7 @@ export default function LitDecryptViewer({ encryptedPayloadUrl, contentType, rat
       </button>
 
       <p className="text-center text-[10px] text-white/20 font-mono">
-        Requires ≥1 LEAK token · powered by Lit Protocol
+        Requires LEAK · tier ladder enforced by Lit Protocol
       </p>
     </div>
   );
