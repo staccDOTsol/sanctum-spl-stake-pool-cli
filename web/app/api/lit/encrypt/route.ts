@@ -78,6 +78,7 @@ export async function POST(req: NextRequest) {
     // complete renderable image per ladder window — byte-prefixes of
     // PNG/WebP render nothing. Everything else is byte-range chunks.
     let mode: "bytes" | "image-strips" = "bytes";
+    let stripError: string | undefined;
     let parts: { offset: number; bytes: Uint8Array }[] = [];
     if (contentType.startsWith("image/") && !contentType.includes("svg")) {
       try {
@@ -105,6 +106,7 @@ export async function POST(req: NextRequest) {
           mode = "image-strips";
         }
       } catch (e) {
+        stripError = e instanceof Error ? `${e.message}\n${e.stack?.slice(0, 400)}` : String(e);
         console.warn("[/api/lit/encrypt] image strip slicing failed, falling back to bytes:", e);
         parts = [];
       }
@@ -179,7 +181,8 @@ export async function POST(req: NextRequest) {
       l2QuoteVault: l2BaseVault,
       chunks,
     };
-    return NextResponse.json(payload);
+    // Surface strip-slicing failures for diagnosis (payload consumers ignore it)
+    return NextResponse.json(stripError ? { ...payload, stripError } : payload);
   } catch (err: unknown) {
     console.error("[/api/lit/encrypt]", err);
     return NextResponse.json(
