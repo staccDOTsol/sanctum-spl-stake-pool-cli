@@ -14,7 +14,11 @@ import LitDecryptViewer from "@/components/LitDecryptViewer";
 import BountyPot from "@/components/BountyPot";
 import Link from "next/link";
 
-export const revalidate = 15;
+// Fully dynamic: never cache a render. A freshly-launched entry that isn't
+// in Blob yet at first paint must not get its notFound() frozen by ISR (that
+// was the "content disappears after launch/decrypt" bug). The registry keeps
+// its own 30s in-memory cache, so this still doesn't hammer storage.
+export const dynamic = "force-dynamic";
 
 function formatBytes(n: number) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)} MB`;
