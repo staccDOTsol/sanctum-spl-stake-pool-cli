@@ -4,12 +4,17 @@
  * (PKP-scoped), so the gating below is enforced by the enclave.
  *
  * Gating model: PERMISSIONLESS, market-decided. No viewer wallet involved.
- * Each chunk envelope seals { tier index i, tier count k, leak-side vault,
- * dontLeak-side vault } inside the ciphertext (tamper-proof). At decrypt
- * the enclave reads BOTH reserve accounts live, computes
- *     r = sqrt(leak / (leak + dontLeak))      (decimals-normalized)
- * and returns only the first floor(r·k) tiers — whoever presses the
- * button gets exactly what the market currently reveals.
+ * Each chunk envelope seals { tier index i, tier count k, v1, v2 } inside
+ * the ciphertext (tamper-proof), where
+ *   v1 = the LEAK curve's BASE vault   (UNSOLD LEAK)
+ *   v2 = the content curve's BASE vault (UNSOLD DontLeak)
+ * Both are ~1B-supply token counts — the same units by construction.
+ * Buying LEAK drains v1 (reveal rises); buying DontLeak drains v2
+ * (reveal falls). At decrypt the enclave reads both live and computes
+ *     r = sqrt( v2 / (v1 + v2) )
+ * returning only the first floor(r·k) tiers — whoever presses the button
+ * gets exactly what the market currently reveals (~70% at a fresh 50/50
+ * launch under the sqrt skew).
  *
  * op = "encrypt": encrypts pre-built chunk envelopes as-is.
  * op = "decrypt": ratio-gates and returns permitted chunks.
@@ -58,15 +63,18 @@ async function main(p) {
       return balCache[v];
     }
 
-    // Market ratio per vault pair, cached. r = sqrt(leak / total).
+    // Reveal ratio per vault pair, cached:
+    //   r = sqrt( unsoldDontLeak / (unsoldLeak + unsoldDontLeak) )
     var rCache = {};
-    async function ratio(l1v, l2v) {
-      var key = l1v + "|" + l2v;
+    async function ratio(v1, v2) {
+      var key = v1 + "|" + v2;
       if (!(key in rCache)) {
-        var leak = await uiBal(l1v);
-        var dont = await uiBal(l2v);
-        var total = leak + dont;
-        rCache[key] = total > 0 ? Math.sqrt(Math.max(0, Math.min(1, leak / total))) : 0;
+        var unsoldLeak = await uiBal(v1);
+        var unsoldDont = await uiBal(v2);
+        var total = unsoldLeak + unsoldDont;
+        rCache[key] = total > 0
+          ? Math.sqrt(Math.max(0, Math.min(1, unsoldDont / total)))
+          : 0;
       }
       return rCache[key];
     }
@@ -81,23 +89,11 @@ async function main(p) {
         chunks.push({ index: ci, unlocked: false });
         continue;
       }
-      var ok;
-      if (env.k) {
-        // Ratio envelope: unlock the first floor(r·k) tiers
-        var r3 = await ratio(env.l1v, env.l2v);
+      var ok = false;
+      if (env.k && env.v1 && env.v2) {
+        var r3 = await ratio(env.v1, env.v2);
         rOut = r3;
         ok = env.i < Math.floor(r3 * env.k + 1e-9);
-      } else {
-        // Legacy threshold envelope (raw-unit vault floor/ceiling)
-        ok = true;
-        async function rawBal(v) {
-          try {
-            var rb = await rpc("getTokenAccountBalance", [v]);
-            return BigInt((rb && rb.value && rb.value.amount) || "0");
-          } catch (e4) { return 0n; }
-        }
-        if (ok && env.fl) ok = (await rawBal(env.l1v)) >= BigInt(env.fl);
-        if (ok && env.ce) ok = (await rawBal(env.l2v)) < BigInt(env.ce);
       }
       chunks.push(ok
         ? { index: ci, unlocked: true, data: env.data }

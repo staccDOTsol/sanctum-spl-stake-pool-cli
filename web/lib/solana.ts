@@ -15,11 +15,12 @@ const RPC = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04
 //   offset 168 — base_vault (32)
 //   offset 200 — quote_vault (32)
 //
-// The "market vote" lives in the QUOTE vaults: buying Leak deposits LEAK
-// into the L1 pool's quote vault; buying DontLeak deposits the quote token
-// into the L2 pool's quote vault. (The base vaults move the opposite way —
-// they drain as tokens are bought — so they'd invert the ratio.)
-const QUOTE_VAULT_OFFSET = 200;
+// The market vote counts UNSOLD TOKENS in each curve's BASE vault — both
+// sides are ~1B-supply token counts, so the units match by construction.
+// Buying LEAK drains the L1 base vault (reveal rises); buying DontLeak
+// drains the content pool's base vault (reveal falls). This mirrors the
+// enclave's formula exactly: r = sqrt(unsoldDontLeak / (unsoldLeak + unsoldDontLeak)).
+const BASE_VAULT_OFFSET = 168;
 
 // Platform L1 pool (LEAK base / rfstacc quote — pool1Address in
 // mainnet-deployment.json). Entries registered before their L1 pool existed
@@ -54,12 +55,12 @@ function bytesToBase58(bytes: Uint8Array): string {
   return s;
 }
 
-async function getQuoteVaultAddress(poolAddress: string): Promise<string> {
+async function getBaseVaultAddress(poolAddress: string): Promise<string> {
   const result = await rpc("getAccountInfo", [poolAddress, { encoding: "base64" }]);
   if (!result?.value?.data) throw new Error(`Pool not found: ${poolAddress}`);
   const data = base64ToBytes(result.value.data[0]);
-  if (data.length < QUOTE_VAULT_OFFSET + 32) throw new Error(`Pool account too small: ${poolAddress}`);
-  return bytesToBase58(data.slice(QUOTE_VAULT_OFFSET, QUOTE_VAULT_OFFSET + 32));
+  if (data.length < BASE_VAULT_OFFSET + 32) throw new Error(`Pool account too small: ${poolAddress}`);
+  return bytesToBase58(data.slice(BASE_VAULT_OFFSET, BASE_VAULT_OFFSET + 32));
 }
 
 interface VaultBalance {
@@ -71,7 +72,7 @@ async function getVaultBalance(poolAddress: string): Promise<VaultBalance> {
   // Missing pool (e.g. stable pools launched before the L1 pool existed)
   // counts as zero rather than failing the whole ratio.
   if (!poolAddress) return { amount: BigInt(0), uiAmount: 0 };
-  const vault  = await getQuoteVaultAddress(poolAddress);
+  const vault  = await getBaseVaultAddress(poolAddress);
   const result = await rpc("getTokenAccountBalance", [vault]);
   return {
     amount:   BigInt(result?.value?.amount ?? "0"),
@@ -91,12 +92,11 @@ export interface PoolReserves {
 }
 
 /**
- * Fetch live reserves from both pools and return the decryption ratio.
- *
- * L1 pool quote vault = LEAK locked by Leak buyers (pro-decrypt).
- * L2 pool quote vault = quote tokens locked by DontLeak buyers (pro-secrecy).
- * Balances are compared in UI units so mints with different decimals
- * (LEAK = 9, meme quote = 6) weigh comparably.
+ * Fetch live UNSOLD reserves from both curves' base vaults and return the
+ * reveal ratio (matching the enclave's formula):
+ *   r = sqrt( unsoldDontLeak / (unsoldLeak + unsoldDontLeak) )
+ * Buying LEAK drains the L1 base vault → r rises; buying DontLeak drains
+ * the content base vault → r falls. Fresh launch ≈ 50/50 → r ≈ 0.71.
  */
 export async function fetchPoolRatio(
   leakPoolAddress: string,
@@ -108,11 +108,11 @@ export async function fetchPoolRatio(
     getSlot(),
   ]);
 
+  // leak = UNSOLD LEAK (L1 base vault), dontLeak = UNSOLD DontLeak
+  // (content base vault). Reveal grows as LEAK sells, shrinks as DontLeak
+  // sells; sqrt skew = exponential cost to suppress deeper tiers.
   const total = leak.uiAmount + dontLeak.uiAmount;
-  // Square-root curve: r = sqrt(Leak / total).
-  // DontLeak must square their position to halve each decrement — exponential cost to suppress.
-  // At parity r≈0.71; to hold r<0.5 DontLeak needs 3× more tokens; r<0.1 needs 99×.
-  const p = total === 0 ? 0 : leak.uiAmount / total;
+  const p = total === 0 ? 0 : dontLeak.uiAmount / total;
   const r = Math.sqrt(Math.max(0, Math.min(1, p)));
 
   return { leakReserve: leak.amount, dontLeakReserve: dontLeak.amount, r, slot };

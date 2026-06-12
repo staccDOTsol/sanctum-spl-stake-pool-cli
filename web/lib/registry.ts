@@ -60,10 +60,13 @@ export async function getRegistry(): Promise<ContentEntry[]> {
 }
 
 export async function registerContent(entry: ContentEntry): Promise<void> {
-  const current = await getRegistry();
+  // Read FRESH from Blob (never the cache) immediately before writing —
+  // building the write from a stale cached list silently deletes entries
+  // registered by other instances in the meantime.
+  const current = await loadFromBlob();
   const updated = [...current.filter(e => e.id !== entry.id), entry];
   await saveToBlob(updated);
-  _cache     = updated;
+  _cache     = updated.filter((e) => !BLACKLIST.has(e.id));
   _cacheTime = Date.now();
 }
 

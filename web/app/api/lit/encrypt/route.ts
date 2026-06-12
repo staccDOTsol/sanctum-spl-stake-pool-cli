@@ -2,22 +2,20 @@
  * POST /api/lit/encrypt
  * Tiered encryption on Lit Chipotle (v3) — datil/naga are sunset.
  *
- * The file is split into chunks; each chunk is wrapped in an envelope that
- * SEALS its ladder thresholds + vault addresses, then encrypted inside the
- * Chipotle TEE with a PKP-derived key. Only the immutable ladder action can
- * decrypt, and it re-checks the thresholds against live Solana state on
- * every decrypt — the reveal frontier is enclave-enforced:
- *
- *   chunk 0   — viewer holds LEAK
- *   chunk i≥1 — viewer holds LEAK
- *               AND L1 leak vault ≥ baseline·1.15^i      (leak capital unlocks)
- *               AND L2 dontLeak vault < unit·2^(K-1-i)   (suppression re-locks)
+ * The file is split into tiers; each tier's envelope SEALS the tier layout
+ * plus both curves' BASE vault addresses (UNSOLD token counts), then is
+ * encrypted inside the Chipotle TEE with a PKP-derived key. At decrypt the
+ * enclave reads both vaults live and computes
+ *     r = sqrt( unsoldDontLeak / (unsoldLeak + unsoldDontLeak) )
+ * returning the first floor(r·k) tiers — permissionless, market-decided.
  *
  * Body: multipart/form-data
  *   file        — the content
  *   l2Pool      — this content's DBC pool address (derivable pre-deploy)
- *   quoteMint   — the L2 pool's quote mint
+ *   baseMint    — the DontLeak mint (for the L2 base-vault PDA)
+ *   quoteMint   — informational
  *   l1Pool      — optional L1 pool override (default: platform LEAK pool)
+ *   tiers       — optional tier count (clamped to LIT_MAX_TIERS)
  *
  * Returns the ChipotlePayload (v3) JSON.
  */
@@ -34,13 +32,11 @@ const RPC = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04
 // Platform L1 pool (LEAK base / rfstacc quote) — the global leak-side vote.
 const DEFAULT_L1_POOL = "ze1HvkHogbWPRiR6W5DYp82YrtJTAum1WEDLrUJNjwX";
 
-/** The L1 pool exists on-chain: read its quote vault address + balance. */
-async function l1VaultState(conn: Connection, l1Pool: string): Promise<{ vault: string; raw: bigint }> {
+/** The L1 pool exists on-chain: read its BASE vault (unsold LEAK). */
+async function l1BaseVault(conn: Connection, l1Pool: string): Promise<string> {
   const info = await conn.getAccountInfo(new PublicKey(l1Pool));
   if (!info) throw new Error(`L1 pool not found: ${l1Pool}`);
-  const vault = new PublicKey(info.data.subarray(200, 232)); // quote_vault
-  const bal   = await conn.getTokenAccountBalance(vault).catch(() => null);
-  return { vault: vault.toBase58(), raw: BigInt(bal?.value.amount ?? "0") };
+  return new PublicKey(info.data.subarray(168, 200)).toBase58(); // base_vault
 }
 
 export async function POST(req: NextRequest) {
@@ -49,11 +45,12 @@ export async function POST(req: NextRequest) {
     const file      = formData.get("file") as File | null;
     const l2Pool    = formData.get("l2Pool") as string | null;
     const quoteMint = formData.get("quoteMint") as string | null;
+    const baseMint  = formData.get("baseMint") as string | null; // the DontLeak mint
     const l1Pool    = (formData.get("l1Pool") as string | null) || DEFAULT_L1_POOL;
     const tiersReq  = Number(formData.get("tiers") ?? "") || undefined;
     if (!file) return NextResponse.json({ error: "file required" }, { status: 400 });
-    if (!l2Pool || !quoteMint) {
-      return NextResponse.json({ error: "l2Pool and quoteMint required (tiered encryption is bound to the content pool)" }, { status: 400 });
+    if (!l2Pool || !baseMint) {
+      return NextResponse.json({ error: "l2Pool and baseMint required (tiered encryption is bound to the content pool)" }, { status: 400 });
     }
 
     const rawBytes    = new Uint8Array(await file.arrayBuffer());
@@ -68,12 +65,14 @@ export async function POST(req: NextRequest) {
 
     const conn = new Connection(RPC, "confirmed");
 
-    // L2 quote vault is a PDA — derivable even before the pool is deployed.
-    const l2QuoteVault = deriveDbcTokenVaultAddress(
-      new PublicKey(l2Pool), new PublicKey(quoteMint),
+    // The content curve's BASE vault (unsold DontLeak) is a PDA —
+    // derivable even before the pool is deployed.
+    const l2BaseVault = deriveDbcTokenVaultAddress(
+      new PublicKey(l2Pool), new PublicKey(baseMint),
     ).toBase58();
+    void quoteMint;
 
-    const l1 = await l1VaultState(conn, l1Pool);
+    const v1 = await l1BaseVault(conn, l1Pool);
 
     // Image content is tiered as horizontal CROPS (top→bottom), one
     // complete renderable image per ladder window — byte-prefixes of
@@ -121,16 +120,16 @@ export async function POST(req: NextRequest) {
 
     const chunkCount = parts.length;
 
-    // Build sealed envelopes: tier index/count + BOTH reserve vault
-    // addresses travel INSIDE the ciphertext (tamper-proof). The enclave
-    // computes r = sqrt(leak/(leak+dontLeak)) from live reserves at every
-    // decrypt and returns the first floor(r·k) tiers — to anyone.
+    // Build sealed envelopes: tier index/count + both BASE vaults (UNSOLD
+    // token counts — same units on both sides) travel INSIDE the ciphertext
+    // (tamper-proof). The enclave computes r = sqrt(v2/(v1+v2)) from live
+    // reserves at every decrypt and returns the first floor(r·k) tiers.
     const messages: string[] = parts.map((part, i) =>
       JSON.stringify({
         i,
         k:    chunkCount,
-        l1v:  l1.vault,
-        l2v:  l2QuoteVault,
+        v1,
+        v2:   l2BaseVault,
         data: Buffer.from(part.bytes).toString("base64"),
       }),
     );
@@ -176,8 +175,8 @@ export async function POST(req: NextRequest) {
       filename:     file.name,
       totalBytes:   rawBytes.length,
       mode,
-      l1QuoteVault: l1.vault,
-      l2QuoteVault,
+      l1QuoteVault: v1,
+      l2QuoteVault: l2BaseVault,
       chunks,
     };
     return NextResponse.json(payload);

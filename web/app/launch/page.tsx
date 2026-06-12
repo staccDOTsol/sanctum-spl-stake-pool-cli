@@ -116,6 +116,7 @@ export default function LaunchPage() {
         fd.append("file", form.file);
         fd.append("l2Pool", prepared.pool2Address);
         fd.append("quoteMint", prepared.quoteMint);
+        fd.append("baseMint", prepared.dontLeakKp.publicKey.toBase58());
         if (prepared.l1Pool) fd.append("l1Pool", prepared.l1Pool);
         const encRes = await fetch("/api/lit/encrypt", { method: "POST", body: fd });
         if (!encRes.ok) {
