@@ -60,8 +60,12 @@ export async function POST(req: NextRequest) {
         throw e;
       });
 
-      // The reveal frontier: contiguous prefix up to the first locked chunk
-      const byIndex = new Map(result.chunks.map((c) => [c.index, c]));
+      const byIndex  = new Map(result.chunks.map((c) => [c.index, c]));
+      const isStrips = payload.mode === "image-strips";
+
+      // bytes mode: the reveal frontier is the contiguous prefix up to the
+      // first locked chunk. image-strips: every strip is independently
+      // renderable, so unlocked strips are returned individually.
       const prefixParts: Buffer[] = [];
       for (let i = 0; i < payload.chunks.length; i++) {
         const c = byIndex.get(i);
@@ -72,10 +76,18 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json({
         version:       3,
+        mode:          payload.mode ?? "bytes",
         contentType:   payload.contentType,
         totalBytes:    payload.totalBytes,
         unlockedBytes: prefix.length,
-        chunks:        payload.chunks.map((c) => ({ index: c.index, unlocked: !!byIndex.get(c.index)?.unlocked })),
+        chunks:        payload.chunks.map((c) => {
+          const r = byIndex.get(c.index);
+          return {
+            index:    c.index,
+            unlocked: !!r?.unlocked,
+            ...(isStrips && r?.unlocked && r.data ? { data: r.data } : {}),
+          };
+        }),
         data:          prefix.toString("base64"),
       });
     }
