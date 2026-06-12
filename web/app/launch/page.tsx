@@ -177,6 +177,7 @@ export default function LaunchPage() {
         symbol:    leakSym,
         uri:       leakMeta,
         curve:     poolType === "stable" ? "stable" : "meme",
+        baseDecimals: 6, // LEAK_content is 6-dec (curve-builder precision)
       });
       addLog(`✓ Leak pool live  (${poolA.sig.slice(0, 16)}…)`);
 
@@ -189,7 +190,8 @@ export default function LaunchPage() {
         name:      `DontLeak: ${form.title}`,
         symbol:    dlSym,
         uri:       dlMeta,
-        curve:     "dontleak", // LEAK-denominated caps: full suppression ≈ half the LEAK supply
+        curve:     "dontleak", // 16M/16B in LEAK_content units → ~490M LEAK to fully suppress
+        baseDecimals: 9,
       });
       addLog(`✓ DontLeak pool live  (${poolB.sig.slice(0, 16)}…)`);
 

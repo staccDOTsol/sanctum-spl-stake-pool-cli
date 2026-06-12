@@ -27,15 +27,18 @@ export const runtime = "nodejs";
 
 const RPC_URL = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
 
-// Curve market caps are denominated in QUOTE TOKENS — overridable per env.
-const STABLE_INITIAL_MC   = Number(process.env.STABLE_INITIAL_MC   ?? 1_000_000);
-const STABLE_MIGRATION_MC = Number(process.env.STABLE_MIGRATION_MC ?? 1_000_000_000);
-// The DontLeak curve is quoted in the content's own LEAK token (1B supply).
-// With 1M/1B caps the curve absorbed only ~30M LEAK before fully bonding —
-// a single 0.1 SOL buy could buy the whole curve and brick the market.
-// 16M/16B caps put the full-suppression cost at ~490M LEAK (~half supply).
-const DL_INITIAL_MC   = Number(process.env.DL_INITIAL_MC   ?? 16_000_000);
-const DL_MIGRATION_MC = Number(process.env.DL_MIGRATION_MC ?? 16_000_000_000);
+// Market caps are in QUOTE TOKENS. buildCurveWithMarketCap loses precision
+// beyond certain raw magnitudes (threshold × 10^decimals ≳ 2^55 throws
+// "Not enough liquidity … amountLeft: <dust>"), so these combos are the
+// EMPIRICALLY VERIFIED set — change decimals/MCs together or builds break:
+//   pool A  base 6 dec, quote 6 dec → 1M/1B   (thr ≈ 30.65M quote)
+//   pool A  base 6 dec, quote 9 dec → 1k/1M   (thr ≈ 30.65k quote)
+//   pool B  base 9 dec, quote 6 dec → 16M/16B (thr ≈ 490M LEAK ≈ half supply)
+function marketCaps(kind: "stable" | "meme" | "dontleak", quoteDecimals: number): { initial: number; migration: number } {
+  if (kind === "dontleak") return { initial: 16_000_000, migration: 16_000_000_000 };
+  if (quoteDecimals >= 9)  return { initial: 1_000,      migration: 1_000_000 };
+  return { initial: 1_000_000, migration: 1_000_000_000 };
+}
 
 // SDK hardcodes TOKEN_PROGRAM_ID for tokenQuoteProgram — patch when the
 // quote is actually Token-2022.
@@ -71,16 +74,15 @@ const COMMON = {
   },
 };
 
-function buildCurve(kind: "stable" | "meme" | "dontleak", quoteDecimals: number) {
+function buildCurve(kind: "stable" | "meme" | "dontleak", quoteDecimals: number, baseDecimals: number) {
   const fee = kind === "meme"
     ? { startingFeeBps: 1000, endingFeeBps: 100, numberOfPeriod: 20, totalDuration: 20 }
     : { startingFeeBps: 500,  endingFeeBps: 100, numberOfPeriod: 10, totalDuration: 10 };
-  const initialMC   = kind === "dontleak" ? DL_INITIAL_MC   : STABLE_INITIAL_MC;
-  const migrationMC = kind === "dontleak" ? DL_MIGRATION_MC : STABLE_MIGRATION_MC;
+  const { initial: initialMC, migration: migrationMC } = marketCaps(kind, quoteDecimals);
   return buildCurveWithMarketCap({
     token: {
       tokenType:            TokenType.Token2022,
-      tokenBaseDecimal:     9,
+      tokenBaseDecimal:     baseDecimals,
       tokenQuoteDecimal:    quoteDecimals, // read from the chain
       tokenAuthorityOption: TokenAuthorityOption.Immutable,
       totalTokenSupply:     1_000_000_000,
@@ -112,8 +114,9 @@ export async function POST(req: NextRequest) {
       symbol:           string;
       uri:              string;
       curve?:           "stable" | "meme" | "dontleak";
+      baseDecimals?:    number;
     };
-    const { payer, configPubkey, basePubkey, quoteMintAddress, name, symbol, uri, curve = "stable" } = body;
+    const { payer, configPubkey, basePubkey, quoteMintAddress, name, symbol, uri, curve = "stable", baseDecimals = 6 } = body;
 
     if (!payer || !configPubkey || !basePubkey || !quoteMintAddress || !name || !symbol || !uri) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -147,7 +150,7 @@ export async function POST(req: NextRequest) {
         symbol,
         uri,
       },
-      ...buildCurve(curve, quoteDecimals),
+      ...buildCurve(curve, quoteDecimals, baseDecimals),
     });
 
     const tx = patchIfT22(rawTx, quoteIsT22);

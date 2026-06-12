@@ -92,6 +92,8 @@ export async function deployCurve(
     symbol:    string;
     uri:       string;
     curve:     "stable" | "meme" | "dontleak";
+    /** 6 for LEAK_content (precision: see deploy route), 9 for DONTLEAK */
+    baseDecimals: number;
   },
 ): Promise<DeployedPool> {
   const res = await fetch("/api/deploy/pool2", {
@@ -106,6 +108,7 @@ export async function deployCurve(
       symbol:          opts.symbol,
       uri:             opts.uri,
       curve:           opts.curve,
+      baseDecimals:    opts.baseDecimals,
     }),
   });
 

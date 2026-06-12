@@ -294,7 +294,7 @@ export default function SwapWidget({
       await confirmTx(sig2);
       const leakAfter    = await getTokenBalance(conn, wallet.publicKey, leakMintPk);
       const leakReceived = leakAfter - leakBefore;
-      addLog(`✓ ${fmt(leakReceived.toString())} Leak received  (${sig2.slice(0, 16)}…)`);
+      addLog(`✓ ${fmt(leakReceived.toString(), 6)} Leak received  (${sig2.slice(0, 16)}…)`); // LEAK_content = 6 dec
 
       if (mode === "leak") {
         // Holding this content's Leak token IS the vote — pool A's unsold
