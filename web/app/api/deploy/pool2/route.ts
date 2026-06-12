@@ -27,9 +27,10 @@ const RPC_URL   = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9b
 // stable quote = rfreestacc (set RFREESTACC_QUOTE_MINT env var once deployed)
 // meme   quote = GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump
 const RFREESTACC = process.env.RFREESTACC_QUOTE_MINT ?? "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS";
-const QUOTE_MINTS = {
-  stable: new PublicKey(RFREESTACC),
-  meme:   new PublicKey("GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump"),
+const QUOTE_MINTS: Record<string, PublicKey> = {
+  stable:    new PublicKey(RFREESTACC),
+  meme:      new PublicKey("GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump"),
+  stacccana: new PublicKey("73edX6xoGY4v5y2hzuKdrUbJXLntqgmo74au1Ki1pump"), // Token-2022, 6 dec
 };
 
 // Detect if a mint uses Token-2022 or legacy SPL Token at runtime.
@@ -143,7 +144,7 @@ export async function POST(req: NextRequest) {
       name:           string;
       symbol:         string;
       uri:            string;
-      poolType?:      "stable" | "meme";
+      poolType?:      "stable" | "meme" | "stacccana";
     };
 
     if (!payer || !configPubkey || !dontLeakPubkey || !name || !symbol || !uri) {
@@ -163,11 +164,11 @@ export async function POST(req: NextRequest) {
     const quoteIsT22 = quoteInfo.value?.owner.equals(TOKEN_2022_PROGRAM_ID) ?? false;
     const quoteDecimals =
       (quoteData && "parsed" in quoteData ? quoteData.parsed?.info?.decimals : undefined)
-      ?? (poolType === "meme" ? 6 : 9);
+      ?? (poolType === "stable" ? 9 : 6);
 
-    const configParam = poolType === "meme"
-      ? buildMemeConfig(quoteDecimals)
-      : buildStableConfig(quoteDecimals);
+    const configParam = poolType === "stable"
+      ? buildStableConfig(quoteDecimals)
+      : buildMemeConfig(quoteDecimals);
 
     const rawTx = await client.partner.createConfigAndPool({
       config:           configPubkey,

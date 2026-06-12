@@ -4,7 +4,7 @@ import { useState, useRef } from "react";
 import { Connection } from "@solana/web3.js";
 import { put } from "@vercel/blob/client";
 import { connectWallet, type WalletProvider } from "@/lib/deploy/wallet";
-import { deployPool2, prepareDeployment, LEAK_MINT, RFREESTACC_MINT, MEME_QUOTE_MINT, STABLE_L1_POOL, MEME_L1_POOL, type PoolTypeChoice } from "@/lib/deploy/transactions";
+import { deployPool2, prepareDeployment, LEAK_MINT, QUOTE_MINT_BY_TYPE, L1_POOL_BY_TYPE, type PoolTypeChoice } from "@/lib/deploy/transactions";
 
 const RPC = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
 
@@ -60,6 +60,12 @@ const POOL_TYPES: { id: PoolTypeChoice; label: string; sub: string; accent: stri
     id:     "meme",
     label:  "Meme Launch",
     sub:    "Quote GNcibpKH → bonds to LEAK. 1B market cap to fully bond.",
+    accent: "purple",
+  },
+  {
+    id:     "stacccana",
+    label:  "$stacccana",
+    sub:    "Quote $stacccana (73edX6xo…pump) → bonds to LEAK. 1B market cap to fully bond.",
     accent: "purple",
   },
 ];
@@ -155,7 +161,7 @@ export default function LaunchPage() {
       const metaUrl  = await blobUpload(`token-metadata/${slug}-${Date.now()}.json`, metaFile);
       addLog(`Metadata JSON: ${metaUrl.slice(0, 60)}…`);
 
-      addLog(`Deploying ${poolType === "meme" ? "Meme" : "rfreestacc"} Pool 2 (tx 1/1)…`);
+      addLog(`Deploying ${chosenType.label} Pool 2 (tx 1/1)…`);
       const deployResult = await deployPool2(conn, wallet, {
         name:     `DontLeak: ${form.title}`,
         symbol,
@@ -184,8 +190,8 @@ export default function LaunchPage() {
   ) {
     addLog("Registering content…");
     try {
-      const l1PoolAddr = poolType === "meme" ? MEME_L1_POOL              : STABLE_L1_POOL;
-      const qMint      = poolType === "meme" ? MEME_QUOTE_MINT.toBase58() : RFREESTACC_MINT.toBase58();
+      const l1PoolAddr = L1_POOL_BY_TYPE[poolType];
+      const qMint      = QUOTE_MINT_BY_TYPE[poolType].toBase58();
       const regRes = await fetch("/api/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

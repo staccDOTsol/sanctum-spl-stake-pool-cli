@@ -13,16 +13,30 @@ export const LEAK_MINT = new PublicKey("GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ
 export const RFREESTACC_MINT = new PublicKey(
   process.env.NEXT_PUBLIC_RFREESTACC_MINT ?? "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS" // fallback = LEAK
 );
-export const MEME_QUOTE_MINT = new PublicKey("GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump");
+export const MEME_QUOTE_MINT      = new PublicKey("GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump");
+// $stacccana — Token-2022, 6 decimals
+export const STACCCANA_QUOTE_MINT = new PublicKey("73edX6xoGY4v5y2hzuKdrUbJXLntqgmo74au1Ki1pump");
 
 // L1 DBC pool addresses (rfreestacc/LEAK and GNcibpKH/LEAK).
 // Stable defaults to the deployed platform pool (pool1Address in
 // mainnet-deployment.json: base = LEAK, quote = rfstacc) so new launches
 // register a real leak-side vote source. Meme stays unset until deployed.
-export const STABLE_L1_POOL = process.env.NEXT_PUBLIC_STABLE_L1_POOL ?? "ze1HvkHogbWPRiR6W5DYp82YrtJTAum1WEDLrUJNjwX";
-export const MEME_L1_POOL   = process.env.NEXT_PUBLIC_MEME_L1_POOL   ?? "";
+export const STABLE_L1_POOL    = process.env.NEXT_PUBLIC_STABLE_L1_POOL    ?? "ze1HvkHogbWPRiR6W5DYp82YrtJTAum1WEDLrUJNjwX";
+export const MEME_L1_POOL      = process.env.NEXT_PUBLIC_MEME_L1_POOL      ?? "";
+export const STACCCANA_L1_POOL = process.env.NEXT_PUBLIC_STACCCANA_L1_POOL ?? "";
 
-export type PoolTypeChoice = "stable" | "meme";
+export type PoolTypeChoice = "stable" | "meme" | "stacccana";
+
+export const QUOTE_MINT_BY_TYPE: Record<PoolTypeChoice, PublicKey> = {
+  stable:    RFREESTACC_MINT,
+  meme:      MEME_QUOTE_MINT,
+  stacccana: STACCCANA_QUOTE_MINT,
+};
+export const L1_POOL_BY_TYPE: Record<PoolTypeChoice, string> = {
+  stable:    STABLE_L1_POOL,
+  meme:      MEME_L1_POOL,
+  stacccana: STACCCANA_L1_POOL,
+};
 
 export interface PreparedDeployment {
   configKp:     Keypair;
@@ -42,14 +56,14 @@ export async function prepareDeployment(poolType: PoolTypeChoice): Promise<Prepa
   const { deriveDbcPoolAddress } = await import("@meteora-ag/dynamic-bonding-curve-sdk");
   const configKp   = Keypair.generate();
   const dontLeakKp = Keypair.generate();
-  const quoteMint  = poolType === "meme" ? MEME_QUOTE_MINT : RFREESTACC_MINT;
+  const quoteMint  = QUOTE_MINT_BY_TYPE[poolType];
   const pool2Address = deriveDbcPoolAddress(quoteMint, dontLeakKp.publicKey, configKp.publicKey);
   return {
     configKp,
     dontLeakKp,
     pool2Address: pool2Address.toBase58(),
     quoteMint:    quoteMint.toBase58(),
-    l1Pool:       poolType === "meme" ? MEME_L1_POOL : STABLE_L1_POOL,
+    l1Pool:       L1_POOL_BY_TYPE[poolType],
   };
 }
 

@@ -6,7 +6,7 @@
  * user's wallet (payer), then broadcasts. Call this ONCE per config type on
  * mainnet — save the resulting config address as an env var.
  *
- * Body: { payer: string, configType: "stable" | "meme", configPubkey: string }
+ * Body: { payer: string, configType: "stable" | "meme" | "stacccana", configPubkey: string }
  * Response: { txBase64, configAddress, blockhash, lastValidBlockHeight }
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -26,9 +26,10 @@ const RPC = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04
 // Platform fee recipient — we earn partner share on both L1 configs
 const PLATFORM_FEE_RECEIVER = process.env.PLATFORM_FEE_RECEIVER ?? "";
 
-const QUOTE_MINTS = {
-  stable: process.env.RFREESTACC_QUOTE_MINT ?? "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS",
-  meme:   "GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump",
+const QUOTE_MINTS: Record<string, string> = {
+  stable:    process.env.RFREESTACC_QUOTE_MINT ?? "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS",
+  meme:      "GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump",
+  stacccana: "73edX6xoGY4v5y2hzuKdrUbJXLntqgmo74au1Ki1pump", // Token-2022, 6 dec
 };
 
 const COMMON = {
@@ -99,7 +100,7 @@ export async function POST(req: NextRequest) {
   try {
     const { payer, configType, configPubkey } = await req.json() as {
       payer:       string;
-      configType:  "stable" | "meme";
+      configType:  "stable" | "meme" | "stacccana";
       configPubkey: string;
     };
 
@@ -119,9 +120,9 @@ export async function POST(req: NextRequest) {
     const mintData = mintInfo.value?.data;
     const quoteDecimals =
       (mintData && "parsed" in mintData ? mintData.parsed?.info?.decimals : undefined)
-      ?? (configType === "meme" ? 6 : 9);
+      ?? (configType === "stable" ? 9 : 6);
 
-    const curveParam = configType === "meme" ? buildMemeCurve(quoteDecimals) : buildStableCurve(quoteDecimals);
+    const curveParam = configType === "stable" ? buildStableCurve(quoteDecimals) : buildMemeCurve(quoteDecimals);
 
     // createConfig — platform is feeClaimer and leftoverReceiver (we earn partner share)
     const tx = await client.partner.createConfig({

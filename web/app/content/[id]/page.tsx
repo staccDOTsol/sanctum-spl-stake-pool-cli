@@ -109,7 +109,7 @@ export default async function ContentDetailPage({ params }: { params: Promise<{ 
           dontLeakMint={entry.dontLeakMint}
           quoteMint={entry.quoteMint ?? "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS"}
           l1PoolAddress={entry.leakPoolAddress}
-          quoteDecimals={entry.poolType === "meme" ? 6 : 9}
+          quoteDecimals={entry.poolType === "stable" ? 9 : 6}
         />
       </div>
 

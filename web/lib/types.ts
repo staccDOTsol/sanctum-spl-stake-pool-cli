@@ -4,7 +4,7 @@
  */
 export type ContentType = string;
 export type ContentCategory = "text" | "image" | "audio" | "video" | "other";
-export type PoolType   = "stable" | "meme" | "quota";
+export type PoolType   = "stable" | "meme" | "stacccana" | "quota";
 
 /** Map a MIME type or legacy form value to a coarse category. */
 export function contentCategory(t: string | undefined): ContentCategory {

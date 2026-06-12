@@ -20,7 +20,11 @@ const BASE = process.env.LIT_API_BASE ?? "https://api.chipotle.litprotocol.com/c
 const tsSource = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "..", "lib", "ladderAction.ts"), "utf8",
 );
-const match = tsSource.match(/LADDER_ACTION_CODE = `\n([\s\S]*?)`;\s*$/);
+// BYTE-IDENTICAL to the runtime string: the capture starts immediately
+// after the opening backtick (including the leading newline). Any
+// difference changes the IPFS CID and the registered action won't match
+// what the server executes.
+const match = tsSource.match(/LADDER_ACTION_CODE = `([\s\S]*?)`;\s*$/);
 if (!match) throw new Error("could not extract LADDER_ACTION_CODE from lib/ladderAction.ts");
 const ACTION_CODE = match[1];
 
