@@ -23,8 +23,14 @@ function formatBytes(n: number) {
 
 export default async function ContentDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const registry = await getRegistry();
-  const entry = registry.find((e) => e.id === id);
+  let registry = await getRegistry();
+  let entry = registry.find((e) => e.id === id);
+  if (!entry) {
+    // Fresh registration may not be in this instance's cache yet —
+    // re-read from Blob before declaring it missing.
+    registry = await getRegistry(true);
+    entry = registry.find((e) => e.id === id);
+  }
   if (!entry) notFound();
 
   const mock = getMockSnapshot(entry.id, entry.leakPoolAddress);

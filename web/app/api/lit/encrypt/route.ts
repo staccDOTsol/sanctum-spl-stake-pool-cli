@@ -91,11 +91,13 @@ export async function POST(req: NextRequest) {
           const fmt: "png" | "jpeg" | "webp" =
             contentType.includes("jpeg") || contentType.includes("jpg") ? "jpeg"
             : contentType.includes("webp") ? "webp" : "png";
-          const stripH = Math.ceil(h / stripCount);
+          // Proportional partition: top_i = floor(i·h/K) — never overruns
+          // the image height regardless of rounding (each strip ≥ 1px
+          // because stripCount ≤ h).
           parts = await Promise.all(
             Array.from({ length: stripCount }, async (_, i) => {
-              const top    = i * stripH;
-              const height = Math.min(stripH, h - top);
+              const top    = Math.floor((i * h) / stripCount);
+              const height = Math.floor(((i + 1) * h) / stripCount) - top;
               const bytes  = await sharp(Buffer.from(rawBytes))
                 .extract({ left: 0, top, width: w, height })
                 .toFormat(fmt)

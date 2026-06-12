@@ -23,6 +23,9 @@ const BLACKLIST = new Set([
   "user-1781253082104-orvqbv", // ong? — test launch
   "user-1781253832945-kk1jal", // safu — test launch (bytes-mode avif)
   "user-1781250525259-e91bo5", // bigww — test launch
+  "user-1781254814070-p26vxy", // yeayeanahnahnah — test launch
+  "user-1781254342230-rseo81", // staccana <3 — test launch
+  "user-1781254237835-laf2a0", // <3 staccana — test launch
   ...(process.env.REGISTRY_BLACKLIST ?? "").split(",").map((s) => s.trim()).filter(Boolean),
 ]);
 
@@ -54,8 +57,8 @@ async function saveToBlob(entries: ContentEntry[]): Promise<void> {
   });
 }
 
-export async function getRegistry(): Promise<ContentEntry[]> {
-  if (_cache && Date.now() - _cacheTime < CACHE_TTL) return _cache;
+export async function getRegistry(fresh = false): Promise<ContentEntry[]> {
+  if (!fresh && _cache && Date.now() - _cacheTime < CACHE_TTL) return _cache;
   const entries = (await loadFromBlob()).filter((e) => !BLACKLIST.has(e.id));
   _cache     = entries;
   _cacheTime = Date.now();
