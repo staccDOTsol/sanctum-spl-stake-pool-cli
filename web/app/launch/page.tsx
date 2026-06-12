@@ -4,7 +4,7 @@ import { useState, useRef } from "react";
 import { Connection } from "@solana/web3.js";
 import { put } from "@vercel/blob/client";
 import { connectWallet, type WalletProvider } from "@/lib/deploy/wallet";
-import { deployPool2, prepareDeployment, LEAK_MINT, QUOTE_MINT_BY_TYPE, L1_POOL_BY_TYPE, type PoolTypeChoice } from "@/lib/deploy/transactions";
+import { deployCurve, prepareDeployment, QUOTE_MINT_BY_TYPE, type PoolTypeChoice } from "@/lib/deploy/transactions";
 
 const RPC = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
 
@@ -98,33 +98,33 @@ export default function LaunchPage() {
     if (!wallet) return;
     setError(null);
     setStep("deploy");
-    addLog("Building Pool 2 transactions…");
+    addLog("Preparing two-pool launch…");
 
     try {
       const conn = new Connection(RPC, "confirmed");
 
-      // Keypairs + pool address first: the encryption threshold ladder is
-      // bound to THIS content's pool, which is derivable before deployment.
+      // All keypairs + BOTH pool addresses first: encryption binds to this
+      // content's own vault pair, derivable before anything is broadcast.
       const prepared = await prepareDeployment(poolType);
-      addLog(`Pool address derived: ${prepared.pool2Address.slice(0, 12)}…`);
+      addLog(`Leak pool:     ${prepared.leakPool.slice(0, 12)}…`);
+      addLog(`DontLeak pool: ${prepared.dontLeakPool.slice(0, 12)}…`);
 
       let fileUrl = "";
       if (form.file) {
-        addLog(`Encrypting ${form.file.name} in tiered chunks (Lit threshold ladder)…`);
-        // Server-side encryption — avoids browser Lit SDK failures on mobile
+        addLog(`Encrypting ${form.file.name} in tiered chunks (Lit TEE)…`);
         const fd = new FormData();
         fd.append("file", form.file);
-        fd.append("l2Pool", prepared.pool2Address);
-        fd.append("quoteMint", prepared.quoteMint);
+        fd.append("leakPool", prepared.leakPool);
+        fd.append("leakMint", prepared.leakMintKp.publicKey.toBase58());
+        fd.append("dontLeakPool", prepared.dontLeakPool);
         fd.append("baseMint", prepared.dontLeakKp.publicKey.toBase58());
-        if (prepared.l1Pool) fd.append("l1Pool", prepared.l1Pool);
         const encRes = await fetch("/api/lit/encrypt", { method: "POST", body: fd });
         if (!encRes.ok) {
           const { error } = await encRes.json().catch(() => ({ error: "Encryption failed" }));
           throw new Error(error);
         }
         const encrypted   = await encRes.json();
-        addLog(`✓ ${encrypted.chunks?.length ?? 1} encrypted tiers, ladder enforced by Lit`);
+        addLog(`✓ ${encrypted.chunks?.length ?? 1} encrypted tiers, ratio enforced by Lit`);
         const payloadJson = JSON.stringify(encrypted);
         const payloadFile = new File([payloadJson], "encrypted-payload.json", { type: "application/json" });
         const pathname    = `content/${Date.now()}-${form.file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}.enc.json`;
@@ -133,50 +133,68 @@ export default function LaunchPage() {
       }
 
       const slug       = form.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24);
-      const symbol     = ("DL" + slug.replace(/-/g, "").toUpperCase()).slice(0, 8);
-      const quoteMint  = prepared.quoteMint;
-      const l1Pool     = prepared.l1Pool;
       const totalBytes = form.file?.size ?? 0;
 
-      // Metadata attributes cover everything needed for on-chain registry reconstruction.
-      // Buyers: SOL→LEAK(Jupiter) → LEAK→quoteMint(DBC L1 pool) → quoteMint→DontLeak(DBC L2 pool)
-      const metaJson = JSON.stringify({
-        name:         `DontLeak: ${form.title}`,
-        symbol,
-        description:  form.description,
-        image:        fileUrl,
-        external_url: "https://leak.markets",
-        attributes: [
-          { trait_type: "Protocol",            value: "leak.markets" },
-          { trait_type: "PoolType",            value: poolType },
-          { trait_type: "ContentType",         value: form.contentType },
-          { trait_type: "TotalBytes",          value: totalBytes },
-          { trait_type: "LeakPool",            value: l1Pool },   // L1 rfreestacc/LEAK or GNcibpKH/LEAK
-          { trait_type: "LeakMint",            value: LEAK_MINT.toBase58() },
-          { trait_type: "QuoteMint",           value: quoteMint },
-          { trait_type: "EncryptedContentUrl", value: fileUrl },
-          { trait_type: "Creator",             value: wallet.publicKey.toBase58() },
-        ],
+      // Token metadata for BOTH tokens
+      const mkMeta = async (kind: "Leak" | "DontLeak", symbol: string) => {
+        const metaJson = JSON.stringify({
+          name:         `${kind}: ${form.title}`,
+          symbol,
+          description:  form.description,
+          image:        fileUrl,
+          external_url: "https://leak.markets",
+          attributes: [
+            { trait_type: "Protocol",            value: "leak.markets" },
+            { trait_type: "Side",                value: kind },
+            { trait_type: "PoolType",            value: poolType },
+            { trait_type: "ContentType",         value: form.contentType },
+            { trait_type: "TotalBytes",          value: totalBytes },
+            { trait_type: "LeakPool",            value: prepared.leakPool },
+            { trait_type: "LeakMint",            value: prepared.leakMintKp.publicKey.toBase58() },
+            { trait_type: "DontLeakPool",        value: prepared.dontLeakPool },
+            { trait_type: "QuoteMint",           value: prepared.quoteMint },
+            { trait_type: "EncryptedContentUrl", value: fileUrl },
+            { trait_type: "Creator",             value: wallet.publicKey.toBase58() },
+          ],
+        });
+        const metaFile = new File([metaJson], "metadata.json", { type: "application/json" });
+        return blobUpload(`token-metadata/${slug}-${kind.toLowerCase()}-${Date.now()}.json`, metaFile);
+      };
+
+      const symBase    = slug.replace(/-/g, "").toUpperCase();
+      const leakSym    = ("L"  + symBase).slice(0, 8);
+      const dlSym      = ("DL" + symBase).slice(0, 8);
+      const [leakMeta, dlMeta] = await Promise.all([mkMeta("Leak", leakSym), mkMeta("DontLeak", dlSym)]);
+      addLog("Metadata uploaded for both tokens");
+
+      // Pool A: LEAK_content / quote
+      addLog("Deploying Leak pool (tx 1/2)…");
+      const poolA = await deployCurve(conn, wallet, {
+        configKp:  prepared.leakConfigKp,
+        baseKp:    prepared.leakMintKp,
+        quoteMint: prepared.quoteMint,
+        name:      `Leak: ${form.title}`,
+        symbol:    leakSym,
+        uri:       leakMeta,
+        curve:     poolType === "stable" ? "stable" : "meme",
       });
-      const metaFile = new File([metaJson], "metadata.json", { type: "application/json" });
-      const metaUrl  = await blobUpload(`token-metadata/${slug}-${Date.now()}.json`, metaFile);
-      addLog(`Metadata JSON: ${metaUrl.slice(0, 60)}…`);
+      addLog(`✓ Leak pool live  (${poolA.sig.slice(0, 16)}…)`);
 
-      addLog(`Deploying ${chosenType.label} Pool 2 (tx 1/1)…`);
-      const deployResult = await deployPool2(conn, wallet, {
-        name:     `DontLeak: ${form.title}`,
-        symbol,
-        uri:      metaUrl,
-        poolType,
-        prepared, // same keypairs the ladder was bound to
+      // Pool B: DONTLEAK / LEAK_content — quote mint now exists on-chain
+      addLog("Deploying DontLeak pool (tx 2/2)…");
+      const poolB = await deployCurve(conn, wallet, {
+        configKp:  prepared.dlConfigKp,
+        baseKp:    prepared.dontLeakKp,
+        quoteMint: prepared.leakMintKp.publicKey.toBase58(),
+        name:      `DontLeak: ${form.title}`,
+        symbol:    dlSym,
+        uri:       dlMeta,
+        curve:     "stable",
       });
+      addLog(`✓ DontLeak pool live  (${poolB.sig.slice(0, 16)}…)`);
 
-      setResult({ pool2Address: deployResult.pool2Address, dontLeakMint: deployResult.dontLeakMint });
-      addLog(`✓ Pool 2 deployed: ${deployResult.sig.slice(0, 20)}…`);
-      addLog(`  DontLeak mint:   ${deployResult.dontLeakMint}`);
-      addLog(`  Pool address:    ${deployResult.pool2Address}`);
-
-      await handleRegister(deployResult, fileUrl, metaUrl, totalBytes);
+      setResult({ pool2Address: poolB.pool, dontLeakMint: poolB.mint });
+      await handleRegister(prepared, fileUrl, dlMeta, totalBytes);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Deployment failed");
       setStep("details");
@@ -184,15 +202,13 @@ export default function LaunchPage() {
   }
 
   async function handleRegister(
-    deployResult: { pool2Address: string; dontLeakMint: string; quoteMint: string; sig: string },
+    prepared: Awaited<ReturnType<typeof prepareDeployment>>,
     fileUrl: string,
     metaUrl: string,
     totalBytes: number,
   ) {
     addLog("Registering content…");
     try {
-      const l1PoolAddr = L1_POOL_BY_TYPE[poolType];
-      const qMint      = QUOTE_MINT_BY_TYPE[poolType].toBase58();
       const regRes = await fetch("/api/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -200,11 +216,11 @@ export default function LaunchPage() {
           title:               form.title,
           description:         form.description,
           contentType:         form.contentType,
-          leakPoolAddress:     l1PoolAddr,  // L1 pool (rfreestacc/LEAK or GNcibpKH/LEAK)
-          dontLeakPoolAddress: deployResult.pool2Address,
-          leakMint:            LEAK_MINT.toBase58(),
-          dontLeakMint:        deployResult.dontLeakMint,
-          quoteMint:           qMint,
+          leakPoolAddress:     prepared.leakPool,
+          dontLeakPoolAddress: prepared.dontLeakPool,
+          leakMint:            prepared.leakMintKp.publicKey.toBase58(),
+          dontLeakMint:        prepared.dontLeakKp.publicKey.toBase58(),
+          quoteMint:           prepared.quoteMint,
           poolType,
           totalBytes,
           encryptedPayloadUrl: fileUrl,

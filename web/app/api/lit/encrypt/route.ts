@@ -9,18 +9,18 @@
  *     r = sqrt( unsoldDontLeak / (unsoldLeak + unsoldDontLeak) )
  * returning the first floor(r·k) tiers — permissionless, market-decided.
  *
- * Body: multipart/form-data
- *   file        — the content
- *   l2Pool      — this content's DBC pool address (derivable pre-deploy)
- *   baseMint    — the DontLeak mint (for the L2 base-vault PDA)
- *   quoteMint   — informational
- *   l1Pool      — optional L1 pool override (default: platform LEAK pool)
- *   tiers       — optional tier count (clamped to LIT_MAX_TIERS)
+ * Body: multipart/form-data — the content's OWN pool pair:
+ *   file         — the content
+ *   leakPool     — pool A address (LEAK_content / quote), derivable pre-deploy
+ *   leakMint     — this content's LEAK mint
+ *   dontLeakPool — pool B address (DONTLEAK / LEAK_content)
+ *   baseMint     — this content's DONTLEAK mint
+ *   tiers        — optional tier count (clamped to LIT_MAX_TIERS)
  *
  * Returns the ChipotlePayload (v3) JSON.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { deriveDbcTokenVaultAddress } from "@meteora-ag/dynamic-bonding-curve-sdk";
 import { chunkCountFor, MAX_CONTENT_BYTES, ENCLAVE_BATCH_BUDGET, type ChipotleChunk, type ChipotlePayload } from "@/lib/litConditions";
 import { runLadderAction, litEnv } from "@/lib/chipotle";
@@ -28,29 +28,18 @@ import { runLadderAction, litEnv } from "@/lib/chipotle";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-const RPC = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
-// Platform L1 pool (LEAK base / rfstacc quote) — the global leak-side vote.
-const DEFAULT_L1_POOL = "ze1HvkHogbWPRiR6W5DYp82YrtJTAum1WEDLrUJNjwX";
-
-/** The L1 pool exists on-chain: read its BASE vault (unsold LEAK). */
-async function l1BaseVault(conn: Connection, l1Pool: string): Promise<string> {
-  const info = await conn.getAccountInfo(new PublicKey(l1Pool));
-  if (!info) throw new Error(`L1 pool not found: ${l1Pool}`);
-  return new PublicKey(info.data.subarray(168, 200)).toBase58(); // base_vault
-}
-
 export async function POST(req: NextRequest) {
   try {
-    const formData  = await req.formData();
-    const file      = formData.get("file") as File | null;
-    const l2Pool    = formData.get("l2Pool") as string | null;
-    const quoteMint = formData.get("quoteMint") as string | null;
-    const baseMint  = formData.get("baseMint") as string | null; // the DontLeak mint
-    const l1Pool    = (formData.get("l1Pool") as string | null) || DEFAULT_L1_POOL;
-    const tiersReq  = Number(formData.get("tiers") ?? "") || undefined;
+    const formData     = await req.formData();
+    const file         = formData.get("file") as File | null;
+    const leakPool     = formData.get("leakPool") as string | null;
+    const leakMint     = formData.get("leakMint") as string | null;
+    const dontLeakPool = formData.get("dontLeakPool") as string | null;
+    const baseMint     = formData.get("baseMint") as string | null; // DONTLEAK mint
+    const tiersReq     = Number(formData.get("tiers") ?? "") || undefined;
     if (!file) return NextResponse.json({ error: "file required" }, { status: 400 });
-    if (!l2Pool || !baseMint) {
-      return NextResponse.json({ error: "l2Pool and baseMint required (tiered encryption is bound to the content pool)" }, { status: 400 });
+    if (!leakPool || !leakMint || !dontLeakPool || !baseMint) {
+      return NextResponse.json({ error: "leakPool, leakMint, dontLeakPool, baseMint required (encryption binds to the content's own pool pair)" }, { status: 400 });
     }
 
     const rawBytes    = new Uint8Array(await file.arrayBuffer());
@@ -63,16 +52,14 @@ export async function POST(req: NextRequest) {
       }, { status: 413 });
     }
 
-    const conn = new Connection(RPC, "confirmed");
-
-    // The content curve's BASE vault (unsold DontLeak) is a PDA —
-    // derivable even before the pool is deployed.
-    const l2BaseVault = deriveDbcTokenVaultAddress(
-      new PublicKey(l2Pool), new PublicKey(baseMint),
+    // Both BASE vaults (unsold token counts) are PDAs of the content's own
+    // pool pair — derivable before either pool exists on-chain.
+    const v1 = deriveDbcTokenVaultAddress(
+      new PublicKey(leakPool), new PublicKey(leakMint),
     ).toBase58();
-    void quoteMint;
-
-    const v1 = await l1BaseVault(conn, l1Pool);
+    const v2 = deriveDbcTokenVaultAddress(
+      new PublicKey(dontLeakPool), new PublicKey(baseMint),
+    ).toBase58();
 
     // Image content is tiered as horizontal CROPS (top→bottom), one
     // complete renderable image per ladder window — byte-prefixes of
@@ -133,7 +120,7 @@ export async function POST(req: NextRequest) {
         i,
         k:    chunkCount,
         v1,
-        v2:   l2BaseVault,
+        v2,
         data: Buffer.from(part.bytes).toString("base64"),
       }),
     );
@@ -180,7 +167,7 @@ export async function POST(req: NextRequest) {
       totalBytes:   rawBytes.length,
       mode,
       l1QuoteVault: v1,
-      l2QuoteVault: l2BaseVault,
+      l2QuoteVault: v2,
       chunks,
     };
     // Surface strip-slicing failures for diagnosis (payload consumers ignore it)

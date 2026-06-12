@@ -135,14 +135,15 @@ async function dbcSwap(
   quoteIsT22:       boolean,
   inputMint:        PublicKey,
 ): Promise<string> {
-  // Use actual wallet balance — Jupiter/prior swaps may land slightly less
-  // than estimated. NEVER submit with a zero balance: the transfer fails
-  // on-chain ("insufficient funds") and burns the fee.
+  // Spend the INTENDED amount, never the whole wallet: clamp to the actual
+  // balance only when the prior swap landed slightly less than estimated.
+  // (Spending `actual` outright once drained a creator's entire quote
+  // stack into their own curve and fully bonded it in one click.)
   const actual = await getTokenBalance(conn, wallet.publicKey, inputMint);
   if (actual <= BigInt(0)) {
     throw new Error(`Wallet holds none of the input token (${inputMint.toBase58().slice(0, 8)}…) — cannot swap`);
   }
-  let safeIn = actual;
+  let safeIn = amountIn > BigInt(0) && amountIn < actual ? amountIn : actual;
 
   const client = DynamicBondingCurveClient.create(conn, "confirmed");
 
@@ -178,19 +179,24 @@ function fmt(raw: string | number, decimals = 9) {
 }
 
 export interface SwapWidgetProps {
+  /** Pool A: this content's LEAK token / quote */
+  leakPoolAddress:     string;
+  leakMint:            string;
+  /** Pool B: this content's DONTLEAK token / LEAK_content */
   dontLeakPoolAddress: string;
   dontLeakMint:        string;
-  quoteMint:           string;       // rfreestacc or GNcibpKH
-  l1PoolAddress:       string;       // L1: quoteMint/LEAK pool
-  quoteDecimals?:      number;       // 9 for rfreestacc, 6 for pump.fun
+  /** Chosen quote (rfreestacc | GNcib | stacccana) */
+  quoteMint:           string;
+  quoteDecimals?:      number;
 }
 
 type Mode = "leak" | "dontleak";
 
 export default function SwapWidget({
+  leakPoolAddress,
+  leakMint,
   dontLeakPoolAddress,
   quoteMint,
-  l1PoolAddress,
   quoteDecimals = 9,
 }: SwapWidgetProps) {
   const [mode, setMode]         = useState<Mode>("leak");
@@ -220,13 +226,13 @@ export default function SwapWidget({
     if (!lamports || lamports < 1000) { setLeakPreview(null); return; }
     try {
       setQuoteErr(null);
-      const q = await jupiterPreviewQuote(SOL_MINT, LEAK_MINT, lamports);
+      const q = await jupiterPreviewQuote(SOL_MINT, quoteMint, lamports);
       setLeakPreview(q.outAmount);
     } catch {
       setQuoteErr("Preview unavailable");
       setLeakPreview(null);
     }
-  }, []);
+  }, [quoteMint, quoteDecimals]);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -258,76 +264,48 @@ export default function SwapWidget({
         await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
       };
 
-      // ── Buy Leak: one Jupiter swap, hold the LEAK ───────────────────────
-      // Holding LEAK is both the market vote (the curve purchase deposited
-      // quote into the L1 vault) and the Lit decryption credential.
+      // ── Hop 1 (both modes): SOL → quote via Jupiter ─────────────────────
+      addLog("Fetching Jupiter Ultra order (SOL → quote)…");
+      const order = await ultraOrder(SOL_MINT, quoteMint, lamports, taker);
+      if (!order.transaction) {
+        throw new Error("Jupiter found a route but no transaction for your wallet — lower the amount or top up SOL (must cover amount + fees)");
+      }
+      addLog(`~${fmt(lamports)} SOL → ~${fmt(order.outAmount, quoteDecimals)} quote`);
+      addLog("Sign tx 1 — SOL → quote (Jupiter Ultra)");
+      const sig1 = await ultraSwap(order, wallet);
+      await confirmTx(sig1);
+      addLog(`✓ quote confirmed  (${sig1.slice(0, 16)}…)`);
+
+      // ── Hop 2 (both modes): quote → LEAK_content on pool A ──────────────
+      const leakMintPk = new PublicKey(leakMint);
+      const leakBefore = await getTokenBalance(conn, wallet.publicKey, leakMintPk);
+      addLog("Sign tx 2 — quote → Leak token (pool A)");
+      const sig2 = await dbcSwap(
+        conn, wallet, leakPoolAddress,
+        BigInt(order.outAmount), false, quoteIsT22, new PublicKey(quoteMint),
+      );
+      await confirmTx(sig2);
+      const leakAfter    = await getTokenBalance(conn, wallet.publicKey, leakMintPk);
+      const leakReceived = leakAfter - leakBefore;
+      addLog(`✓ ${fmt(leakReceived.toString())} Leak received  (${sig2.slice(0, 16)}…)`);
+
       if (mode === "leak") {
-        addLog("Fetching Jupiter Ultra order (SOL → LEAK)…");
-        const order = await ultraOrder(SOL_MINT, LEAK_MINT, lamports, taker);
-        addLog(`~${fmt(lamports)} SOL → ~${fmt(order.outAmount)} LEAK`);
-        addLog("Sign tx 1 — SOL → LEAK (Jupiter Ultra)");
-        const sig1 = await ultraSwap(order, wallet);
-        await confirmTx(sig1);
-        addLog(`✓ Holding LEAK — your vote to reveal (and your decryption key)  (${sig1.slice(0, 16)}…)`);
-        setDone(sig1);
+        // Holding this content's Leak token IS the vote — pool A's unsold
+        // supply just dropped, raising the reveal ratio for everyone.
+        addLog("✓ Holding Leak — reveal ratio rises for everyone");
+        setDone(sig2);
         return;
       }
 
-      // ── Buy DontLeak ─────────────────────────────────────────────────────
-      // The L2 curve only accepts ITS quote token. Prefer buying the quote
-      // directly with SOL on Jupiter; fall back to SOL→LEAK + the L1 pool
-      // hop (base=LEAK/quote=quoteMint, so spending LEAK is base→quote)
-      // when Jupiter has no route to the quote token.
-      let quoteOut: bigint;
-      let direct = quoteMint !== LEAK_MINT;
-      let order: UltraOrder | null = null;
-      if (direct) {
-        addLog("Fetching Jupiter Ultra order (SOL → quote token)…");
-        try {
-          order = await ultraOrder(SOL_MINT, quoteMint, lamports, taker);
-        } catch (e) {
-          // Genuinely unroutable (or API error) — fall back to the LEAK route
-          direct = false;
-          order  = null;
-          addLog(`Direct quote route unavailable (${e instanceof Error ? e.message.slice(0, 80) : e}) — trying LEAK route`);
-        }
-        if (order && !order.transaction) {
-          // Routable, but Ultra returned no signable tx for THIS taker —
-          // almost always: the wallet's SOL can't cover amount + fees.
-          throw new Error("Jupiter found a route but no transaction for your wallet — lower the amount or top up SOL (must cover amount + fees)");
-        }
-      }
-
-      if (direct && order) {
-        addLog("Sign tx 1 — SOL → quote token (Jupiter Ultra)");
-        const sig1 = await ultraSwap(order, wallet);
-        await confirmTx(sig1);
-        quoteOut = BigInt(order.outAmount);
-        addLog(`✓ quote token confirmed  (${sig1.slice(0, 16)}…)`);
-      } else {
-        if (quoteMint !== LEAK_MINT && !l1PoolAddress) {
-          throw new Error("Cannot acquire the pool's quote token: no Jupiter route and no L1 pool configured");
-        }
-        addLog("Fetching Jupiter Ultra order (SOL → LEAK)…");
-        const leakOrder = await ultraOrder(SOL_MINT, LEAK_MINT, lamports, taker);
-        const leakOut   = BigInt(leakOrder.outAmount);
-        addLog(`~${fmt(lamports)} SOL → ~${fmt(leakOut.toString())} LEAK`);
-        addLog("Sign tx 1 — SOL → LEAK (Jupiter Ultra)");
-        const sig1 = await ultraSwap(leakOrder, wallet);
-        await confirmTx(sig1);
-        addLog(`✓ LEAK confirmed  (${sig1.slice(0, 16)}…)`);
-        quoteOut = leakOut;
-        if (quoteMint !== LEAK_MINT) {
-          addLog("Sign tx 2 — LEAK → quote token (DBC L1)");
-          const sig2 = await dbcSwap(conn, wallet, l1PoolAddress, leakOut, true, quoteIsT22, new PublicKey(LEAK_MINT));
-          addLog(`✓ quote token received  (${sig2.slice(0, 16)}…)`);
-        }
-      }
-
-      // Final hop: quote token → DontLeak on the content curve
-      addLog("Sign final tx — quote token → DontLeak (DBC L2)");
-      const sig3 = await dbcSwap(conn, wallet, dontLeakPoolAddress, quoteOut, false, quoteIsT22, new PublicKey(quoteMint));
-      addLog(`✓ DontLeak received  (${sig3.slice(0, 16)}…)`);
+      // ── Hop 3 (DontLeak): LEAK_content → DONTLEAK on pool B ─────────────
+      if (leakReceived <= BigInt(0)) throw new Error("No Leak tokens received from pool A — cannot continue");
+      addLog("Sign tx 3 — Leak → DontLeak (pool B)");
+      // Pool B's quote is the content's LEAK token (Token-2022 by construction)
+      const sig3 = await dbcSwap(
+        conn, wallet, dontLeakPoolAddress,
+        leakReceived, false, true, leakMintPk,
+      );
+      addLog(`✓ DontLeak received — suppression deepens  (${sig3.slice(0, 16)}…)`);
       setDone(sig3);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Swap failed");
@@ -384,9 +362,9 @@ export default function SwapWidget({
           <span className="text-white/60">{solInput || "—"} SOL</span>
         </div>
         <div className="flex justify-between">
-          <span className="text-white/30">→ LEAK</span>
+          <span className="text-white/30">→ quote</span>
           <span className={quoteErr ? "text-red-400/60" : "text-green-400/70"}>
-            {quoteErr ?? (leakPreview ? `~${fmt(leakPreview)}` : "…")}
+            {quoteErr ?? (leakPreview ? `~${fmt(leakPreview, quoteDecimals)}` : "…")}
           </span>
         </div>
         {!isLeak && (
@@ -402,7 +380,7 @@ export default function SwapWidget({
           </>
         )}
         <div className="pt-1 text-white/20 text-[10px]">
-          {isLeak ? "1 tx: Jupiter Ultra SOL→LEAK — hold to vote & decrypt" : "3 txs: Jupiter Ultra SOL→LEAK, DBC LEAK→quote, DBC quote→DontLeak"}
+          {isLeak ? "2 txs: SOL→quote (Jupiter), quote→Leak (pool A)" : "3 txs: SOL→quote, quote→Leak (pool A), Leak→DontLeak (pool B)"}
         </div>
       </div>
 

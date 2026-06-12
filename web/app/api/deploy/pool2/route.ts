@@ -1,13 +1,16 @@
 /**
  * POST /api/deploy/pool2
  *
- * Builds and returns an unsigned DBC createConfigAndPool transaction.
- * Supports two pool types:
- *   "stable"  — quote = LEAK (Token-2022, yield/rfreestacc curve)
- *   "meme"    — quote = GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump, 1B migration cap
+ * Builds ONE unsigned DBC createConfigAndPool transaction — called twice
+ * per launch:
+ *   Pool A: base = net-new LEAK_content,    quote = rfreestacc | GNcib | stacccana
+ *   Pool B: base = net-new DONTLEAK_content, quote = THAT LEAK_content mint
+ * (Pool B is built after Pool A confirms, because its quote mint must
+ * exist on-chain for the SDK to read decimals/program.)
  *
- * Body: { payer, configPubkey, dontLeakPubkey, name, symbol, uri, poolType? }
- * Response: { txBase64, pool2Address, quoteMint, blockhash, lastValidBlockHeight }
+ * Body: { payer, configPubkey, basePubkey, quoteMintAddress, name, symbol,
+ *         uri, curve: "stable" | "meme" }
+ * Response: { txBase64, poolAddress, quoteMint, blockhash, lastValidBlockHeight }
  */
 import { NextRequest, NextResponse } from "next/server";
 import { Connection, PublicKey, Transaction } from "@solana/web3.js";
@@ -22,20 +25,14 @@ import {
 
 export const runtime = "nodejs";
 
-const RPC_URL   = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
+const RPC_URL = "https://mainnet.helius-rpc.com/?api-key=89a5704a-97ad-4c43-9be4-f04dc03a6b34";
 
-// stable quote = rfreestacc (set RFREESTACC_QUOTE_MINT env var once deployed)
-// meme   quote = GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump
-const RFREESTACC = process.env.RFREESTACC_QUOTE_MINT ?? "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS";
-const QUOTE_MINTS: Record<string, PublicKey> = {
-  stable:    new PublicKey(RFREESTACC),
-  meme:      new PublicKey("GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump"),
-  stacccana: new PublicKey("73edX6xoGY4v5y2hzuKdrUbJXLntqgmo74au1Ki1pump"), // Token-2022, 6 dec
-};
+// Curve market caps are denominated in QUOTE TOKENS — overridable per env.
+const STABLE_INITIAL_MC   = Number(process.env.STABLE_INITIAL_MC   ?? 1_000_000);
+const STABLE_MIGRATION_MC = Number(process.env.STABLE_MIGRATION_MC ?? 1_000_000_000);
 
-// Detect if a mint uses Token-2022 or legacy SPL Token at runtime.
-// SDK hardcodes TOKEN_PROGRAM_ID for tokenQuoteProgram in initializeToken2022Pool —
-// only patch when the quote is actually Token-2022.
+// SDK hardcodes TOKEN_PROGRAM_ID for tokenQuoteProgram — patch when the
+// quote is actually Token-2022.
 function patchIfT22(tx: Transaction, quoteIsT22: boolean): Transaction {
   if (!quoteIsT22) return tx;
   for (const ix of tx.instructions) {
@@ -46,136 +43,88 @@ function patchIfT22(tx: Transaction, quoteIsT22: boolean): Transaction {
   return tx;
 }
 
-const COMMON_LOCKED_VESTING = {
-  totalLockedVestingAmount:       0,
-  numberOfVestingPeriod:          0,
-  cliffUnlockAmount:              0,
-  totalVestingDuration:           0,
-  cliffDurationFromMigrationTime: 0,
+const COMMON = {
+  migration: {
+    migrationOption:    MigrationOption.MET_DAMM_V2,
+    migrationFeeOption: MigrationFeeOption.FixedBps25,
+    migrationFee:       { feePercentage: 0, creatorFeePercentage: 0 },
+    migratedPoolFee:    undefined,
+  },
+  liquidityDistribution: {
+    partnerLiquidityPercentage:                0,
+    partnerPermanentLockedLiquidityPercentage: 0,
+    creatorLiquidityPercentage:                90,
+    creatorPermanentLockedLiquidityPercentage: 10,
+    partnerLiquidityVestingInfoParams:         undefined,
+    creatorLiquidityVestingInfoParams:         undefined,
+  },
+  lockedVesting: {
+    totalLockedVestingAmount: 0, numberOfVestingPeriod: 0,
+    cliffUnlockAmount: 0, totalVestingDuration: 0,
+    cliffDurationFromMigrationTime: 0,
+  },
 };
 
-const COMMON_LIQUIDITY = {
-  partnerLiquidityPercentage:                0,
-  partnerPermanentLockedLiquidityPercentage: 0,
-  creatorLiquidityPercentage:                90,
-  creatorPermanentLockedLiquidityPercentage: 10,
-  partnerLiquidityVestingInfoParams:         undefined,
-  creatorLiquidityVestingInfoParams:         undefined,
-};
-
-const COMMON_MIGRATION = {
-  migrationOption:    MigrationOption.MET_DAMM_V2,
-  migrationFeeOption: MigrationFeeOption.FixedBps25,
-  migrationFee:       { feePercentage: 0, creatorFeePercentage: 0 },
-  migratedPoolFee:    undefined,
-};
-
-// Curve market caps are denominated in QUOTE TOKENS. The stable quote is
-// LEAK (~1M LEAK ≈ 1 SOL), so caps must be LEAK-scaled: the old 11/1100
-// made the whole curve worth a fraction of a cent and ANY buy overflowed
-// it (program error 6033). Overridable per environment.
-const STABLE_INITIAL_MC   = Number(process.env.STABLE_INITIAL_MC   ?? 1_000_000);     // ≈ 1 SOL
-const STABLE_MIGRATION_MC = Number(process.env.STABLE_MIGRATION_MC ?? 1_000_000_000); // ≈ 1k SOL
-
-function buildStableConfig(quoteDecimals: number) {
+function buildCurve(kind: "stable" | "meme", quoteDecimals: number) {
+  const fee = kind === "meme"
+    ? { startingFeeBps: 1000, endingFeeBps: 100, numberOfPeriod: 20, totalDuration: 20 }
+    : { startingFeeBps: 500,  endingFeeBps: 100, numberOfPeriod: 10, totalDuration: 10 };
   return buildCurveWithMarketCap({
     token: {
       tokenType:            TokenType.Token2022,
       tokenBaseDecimal:     9,
-      tokenQuoteDecimal:    quoteDecimals, // fetched on-chain (LEAK/rfstacc = 9)
+      tokenQuoteDecimal:    quoteDecimals, // read from the chain
       tokenAuthorityOption: TokenAuthorityOption.Immutable,
       totalTokenSupply:     1_000_000_000,
       leftover:             0,
     },
     fee: {
-      baseFeeParams: {
-        baseFeeMode: BaseFeeMode.FeeSchedulerLinear,
-        feeSchedulerParam: { startingFeeBps: 500, endingFeeBps: 100, numberOfPeriod: 10, totalDuration: 10 },
-      },
+      baseFeeParams: { baseFeeMode: BaseFeeMode.FeeSchedulerLinear, feeSchedulerParam: fee },
       dynamicFeeEnabled:           false,
       collectFeeMode:              CollectFeeMode.QuoteToken,
       creatorTradingFeePercentage: 50,
       poolCreationFee:             0,
       enableFirstSwapWithMinFee:   false,
     },
-    migration:             COMMON_MIGRATION,
-    liquidityDistribution: COMMON_LIQUIDITY,
-    lockedVesting:         COMMON_LOCKED_VESTING,
-    activationType:        ActivationType.Slot,
-    initialMarketCap:      STABLE_INITIAL_MC,
-    migrationMarketCap:    STABLE_MIGRATION_MC,
-  });
-}
-
-function buildMemeConfig(quoteDecimals: number) {
-  return buildCurveWithMarketCap({
-    token: {
-      tokenType:            TokenType.Token2022,
-      tokenBaseDecimal:     9,
-      tokenQuoteDecimal:    quoteDecimals, // fetched on-chain (GNcib = 6)
-      tokenAuthorityOption: TokenAuthorityOption.Immutable,
-      totalTokenSupply:     1_000_000_000,
-      leftover:             0,
-    },
-    fee: {
-      baseFeeParams: {
-        baseFeeMode: BaseFeeMode.FeeSchedulerLinear,
-        feeSchedulerParam: { startingFeeBps: 1000, endingFeeBps: 100, numberOfPeriod: 20, totalDuration: 20 },
-      },
-      dynamicFeeEnabled:           false,
-      collectFeeMode:              CollectFeeMode.QuoteToken,
-      creatorTradingFeePercentage: 50,
-      poolCreationFee:             0,
-      enableFirstSwapWithMinFee:   false,
-    },
-    migration:             COMMON_MIGRATION,
-    liquidityDistribution: COMMON_LIQUIDITY,
-    lockedVesting:         COMMON_LOCKED_VESTING,
-    activationType:        ActivationType.Slot,
-    initialMarketCap:      1_000,
-    migrationMarketCap:    1_000_000_000, // 1B quote tokens to bond
+    ...COMMON,
+    activationType:     ActivationType.Slot,
+    initialMarketCap:   STABLE_INITIAL_MC,
+    migrationMarketCap: STABLE_MIGRATION_MC,
   });
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const {
-      payer, configPubkey, dontLeakPubkey,
-      name, symbol, uri,
-      poolType = "stable",
-    } = body as {
-      payer:          string;
-      configPubkey:   string;
-      dontLeakPubkey: string;
-      name:           string;
-      symbol:         string;
-      uri:            string;
-      poolType?:      "stable" | "meme" | "stacccana";
+    const body = await req.json() as {
+      payer:            string;
+      configPubkey:     string;
+      basePubkey:       string;
+      quoteMintAddress: string;
+      name:             string;
+      symbol:           string;
+      uri:              string;
+      curve?:           "stable" | "meme";
     };
+    const { payer, configPubkey, basePubkey, quoteMintAddress, name, symbol, uri, curve = "stable" } = body;
 
-    if (!payer || !configPubkey || !dontLeakPubkey || !name || !symbol || !uri) {
+    if (!payer || !configPubkey || !basePubkey || !quoteMintAddress || !name || !symbol || !uri) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    const quoteMint = QUOTE_MINTS[poolType] ?? QUOTE_MINTS.stable;
+    const quoteMint = new PublicKey(quoteMintAddress);
+    const conn      = new Connection(RPC_URL, "confirmed");
+    const client    = DynamicBondingCurveClient.create(conn, "confirmed");
+    const payerPk   = new PublicKey(payer);
 
-    const conn    = new Connection(RPC_URL, "confirmed");
-    const client  = DynamicBondingCurveClient.create(conn, "confirmed");
-    const payerPk = new PublicKey(payer);
-
-    // Read the quote mint once: token program (for the Token-2022 patch) and
-    // actual decimals (so the curve config can never drift from the mint).
+    // Read the quote mint once: token program + actual decimals
     const quoteInfo  = await conn.getParsedAccountInfo(quoteMint);
-    const quoteData  = quoteInfo.value?.data;
-    const quoteIsT22 = quoteInfo.value?.owner.equals(TOKEN_2022_PROGRAM_ID) ?? false;
+    if (!quoteInfo.value) {
+      return NextResponse.json({ error: `Quote mint ${quoteMintAddress} not found on-chain (deploy its pool first)` }, { status: 400 });
+    }
+    const quoteData  = quoteInfo.value.data;
+    const quoteIsT22 = quoteInfo.value.owner.equals(TOKEN_2022_PROGRAM_ID);
     const quoteDecimals =
-      (quoteData && "parsed" in quoteData ? quoteData.parsed?.info?.decimals : undefined)
-      ?? (poolType === "stable" ? 9 : 6);
-
-    const configParam = poolType === "stable"
-      ? buildStableConfig(quoteDecimals)
-      : buildMemeConfig(quoteDecimals);
+      (quoteData && "parsed" in quoteData ? quoteData.parsed?.info?.decimals : undefined) ?? 9;
 
     const rawTx = await client.partner.createConfigAndPool({
       config:           configPubkey,
@@ -184,13 +133,13 @@ export async function POST(req: NextRequest) {
       quoteMint:        quoteMint.toBase58(),
       payer,
       preCreatePoolParam: {
-        baseMint:    new PublicKey(dontLeakPubkey),
+        baseMint:    new PublicKey(basePubkey),
         poolCreator: payerPk,
         name,
         symbol,
         uri,
       },
-      ...configParam,
+      ...buildCurve(curve, quoteDecimals),
     });
 
     const tx = patchIfT22(rawTx, quoteIsT22);
@@ -199,16 +148,14 @@ export async function POST(req: NextRequest) {
     tx.recentBlockhash = blockhash;
     tx.feePayer        = payerPk;
 
-    const pool2Address = deriveDbcPoolAddress(
-      quoteMint,
-      new PublicKey(dontLeakPubkey),
-      new PublicKey(configPubkey),
+    const poolAddress = deriveDbcPoolAddress(
+      quoteMint, new PublicKey(basePubkey), new PublicKey(configPubkey),
     );
 
     return NextResponse.json({
-      txBase64:            tx.serialize({ requireAllSignatures: false }).toString("base64"),
-      pool2Address:        pool2Address.toBase58(),
-      quoteMint:           quoteMint.toBase58(),
+      txBase64:    tx.serialize({ requireAllSignatures: false }).toString("base64"),
+      poolAddress: poolAddress.toBase58(),
+      quoteMint:   quoteMint.toBase58(),
       blockhash,
       lastValidBlockHeight,
     });

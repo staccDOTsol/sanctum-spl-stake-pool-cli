@@ -1,29 +1,28 @@
 /**
  * Browser-side deploy helpers for the leak.markets launch wizard.
+ *
+ * EVERY LAUNCH DEPLOYS TWO NET-NEW CURVES:
+ *   Pool A — a net-new LEAK token for this content, quoted in the chosen
+ *            quote token (rfreestacc | GNcibpKH "memery" | $stacccana)
+ *   Pool B — a net-new DONTLEAK token, quoted in THAT content's LEAK token
+ *
+ * The reveal ratio compares UNSOLD supply across the content's own pair:
+ *   r = sqrt( unsoldDontLeak / (unsoldLeak + unsoldDontLeak) )
+ * Buy Leak  = SOL → quote → LEAK_content            (drains pool A base, r↑)
+ * Buy DontLeak = SOL → quote → LEAK_content → DONTLEAK (drains pool B base, r↓)
  */
 import { Connection, Keypair, Transaction, PublicKey } from "@solana/web3.js";
 import type { WalletProvider } from "./wallet";
 
-// LEAK = base money layer
+// Global LEAK = base money layer (legacy display only)
 export const LEAK_MINT = new PublicKey("GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS");
 
-// L1 quote tokens — content pools quote against these (not LEAK directly)
-// stable: rfreestacc/LEAK pool.  Set NEXT_PUBLIC_RFREESTACC_MINT once deployed.
-// meme:   GNcibpKH/LEAK pool.   Config created by platform; platform earns partner share.
 export const RFREESTACC_MINT = new PublicKey(
   process.env.NEXT_PUBLIC_RFREESTACC_MINT ?? "GbGAcydfEkAnvrfQGZuKNdLMJFRf2LpTKeo1eKxZ48LS" // fallback = LEAK
 );
 export const MEME_QUOTE_MINT      = new PublicKey("GNcibpKH7dyMux4JEYE3dv4sfkXmDCfJU4CpJNM9pump");
 // $stacccana — Token-2022, 6 decimals
 export const STACCCANA_QUOTE_MINT = new PublicKey("73edX6xoGY4v5y2hzuKdrUbJXLntqgmo74au1Ki1pump");
-
-// L1 DBC pool addresses (rfreestacc/LEAK and GNcibpKH/LEAK).
-// Stable defaults to the deployed platform pool (pool1Address in
-// mainnet-deployment.json: base = LEAK, quote = rfstacc) so new launches
-// register a real leak-side vote source. Meme stays unset until deployed.
-export const STABLE_L1_POOL    = process.env.NEXT_PUBLIC_STABLE_L1_POOL    ?? "ze1HvkHogbWPRiR6W5DYp82YrtJTAum1WEDLrUJNjwX";
-export const MEME_L1_POOL      = process.env.NEXT_PUBLIC_MEME_L1_POOL      ?? "";
-export const STACCCANA_L1_POOL = process.env.NEXT_PUBLIC_STACCCANA_L1_POOL ?? "";
 
 export type PoolTypeChoice = "stable" | "meme" | "stacccana";
 
@@ -32,67 +31,81 @@ export const QUOTE_MINT_BY_TYPE: Record<PoolTypeChoice, PublicKey> = {
   meme:      MEME_QUOTE_MINT,
   stacccana: STACCCANA_QUOTE_MINT,
 };
-export const L1_POOL_BY_TYPE: Record<PoolTypeChoice, string> = {
-  stable:    STABLE_L1_POOL,
-  meme:      MEME_L1_POOL,
-  stacccana: STACCCANA_L1_POOL,
-};
 
 export interface PreparedDeployment {
-  configKp:     Keypair;
+  // Pool A: LEAK_content / quote
+  leakConfigKp: Keypair;
+  leakMintKp:   Keypair;
+  leakPool:     string;
+  // Pool B: DONTLEAK_content / LEAK_content
+  dlConfigKp:   Keypair;
   dontLeakKp:   Keypair;
-  /** Deterministic — derivable before the pool exists on-chain. */
-  pool2Address: string;
+  dontLeakPool: string;
   quoteMint:    string;
-  l1Pool:       string;
 }
 
 /**
- * Generate the deployment keypairs and derive the pool address up front,
- * so encryption can bind its threshold ladder to this content's pool
- * BEFORE anything is broadcast.
+ * Generate all four keypairs and derive BOTH pool addresses up front, so
+ * encryption can bind to this content's own vault pair BEFORE anything is
+ * broadcast (pool + vault addresses are PDAs of config/mints).
  */
 export async function prepareDeployment(poolType: PoolTypeChoice): Promise<PreparedDeployment> {
   const { deriveDbcPoolAddress } = await import("@meteora-ag/dynamic-bonding-curve-sdk");
-  const configKp   = Keypair.generate();
-  const dontLeakKp = Keypair.generate();
-  const quoteMint  = QUOTE_MINT_BY_TYPE[poolType];
-  const pool2Address = deriveDbcPoolAddress(quoteMint, dontLeakKp.publicKey, configKp.publicKey);
+  const leakConfigKp = Keypair.generate();
+  const leakMintKp   = Keypair.generate();
+  const dlConfigKp   = Keypair.generate();
+  const dontLeakKp   = Keypair.generate();
+  const quoteMint    = QUOTE_MINT_BY_TYPE[poolType];
+
+  const leakPool     = deriveDbcPoolAddress(quoteMint,             leakMintKp.publicKey, leakConfigKp.publicKey);
+  const dontLeakPool = deriveDbcPoolAddress(leakMintKp.publicKey,  dontLeakKp.publicKey, dlConfigKp.publicKey);
+
   return {
-    configKp,
+    leakConfigKp,
+    leakMintKp,
+    leakPool:     leakPool.toBase58(),
+    dlConfigKp,
     dontLeakKp,
-    pool2Address: pool2Address.toBase58(),
+    dontLeakPool: dontLeakPool.toBase58(),
     quoteMint:    quoteMint.toBase58(),
-    l1Pool:       L1_POOL_BY_TYPE[poolType],
   };
 }
 
-export interface DeployPool2Result {
-  dontLeakMint: string;
-  pool2Address: string;
-  quoteMint:    string;
-  sig:          string;
+export interface DeployedPool {
+  pool: string;
+  mint: string;
+  sig:  string;
 }
 
-export async function deployPool2(
-  conn: Connection,
+/**
+ * Deploy one curve (createConfigAndPool) via the generic API route.
+ * curve "stable" = gentler fees; "meme" = anti-snipe fee schedule.
+ */
+export async function deployCurve(
+  conn:   Connection,
   wallet: WalletProvider,
-  opts: { name: string; symbol: string; uri: string; poolType: PoolTypeChoice; prepared?: PreparedDeployment },
-): Promise<DeployPool2Result> {
-  const configKp   = opts.prepared?.configKp   ?? Keypair.generate();
-  const dontLeakKp = opts.prepared?.dontLeakKp ?? Keypair.generate();
-
+  opts: {
+    configKp:  Keypair;
+    baseKp:    Keypair;
+    quoteMint: string;
+    name:      string;
+    symbol:    string;
+    uri:       string;
+    curve:     "stable" | "meme";
+  },
+): Promise<DeployedPool> {
   const res = await fetch("/api/deploy/pool2", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      payer:          wallet.publicKey.toBase58(),
-      configPubkey:   configKp.publicKey.toBase58(),
-      dontLeakPubkey: dontLeakKp.publicKey.toBase58(),
-      name:           opts.name,
-      symbol:         opts.symbol,
-      uri:            opts.uri,
-      poolType:       opts.poolType,
+      payer:           wallet.publicKey.toBase58(),
+      configPubkey:    opts.configKp.publicKey.toBase58(),
+      basePubkey:      opts.baseKp.publicKey.toBase58(),
+      quoteMintAddress: opts.quoteMint,
+      name:            opts.name,
+      symbol:          opts.symbol,
+      uri:             opts.uri,
+      curve:           opts.curve,
     }),
   });
 
@@ -101,20 +114,15 @@ export async function deployPool2(
     throw new Error(error ?? "Failed to build transaction");
   }
 
-  const { txBase64, pool2Address, quoteMint: returnedQuoteMint, blockhash, lastValidBlockHeight } = await res.json();
+  const { txBase64, poolAddress, blockhash, lastValidBlockHeight } = await res.json();
 
   const tx = Transaction.from(Buffer.from(txBase64, "base64"));
-  tx.partialSign(configKp);
-  tx.partialSign(dontLeakKp);
+  tx.partialSign(opts.configKp);
+  tx.partialSign(opts.baseKp);
 
   const signed = await wallet.signTransaction(tx) as Transaction;
   const sig    = await conn.sendRawTransaction(signed.serialize(), { skipPreflight: false });
   await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
 
-  return {
-    dontLeakMint: dontLeakKp.publicKey.toBase58(),
-    pool2Address,
-    quoteMint:    (returnedQuoteMint as string) ?? RFREESTACC_MINT.toBase58(),
-    sig,
-  };
+  return { pool: poolAddress, mint: opts.baseKp.publicKey.toBase58(), sig };
 }
